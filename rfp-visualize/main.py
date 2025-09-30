@@ -114,6 +114,7 @@ def show_in_rr(
         file_path="/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/exports/splat/splat.ply",
     )
 
+
 def generate_camera_trajectory() -> list[npt.NDArray[np.floating]]:
     fps = 30
     secs = 3
@@ -128,7 +129,7 @@ def generate_camera_trajectory() -> list[npt.NDArray[np.floating]]:
     homs_w2c = []
     for i in range(n):
         frac_n = i / n
-        frac_rad = 2*np.pi*frac_n
+        frac_rad = 2 * np.pi * frac_n
         x = np.cos(frac_rad) * dist
         y = np.sin(frac_rad) * dist
         hom_w2c = look_at((0, 0, 0), (x, y, z)) @ hom_translate_center
@@ -137,9 +138,12 @@ def generate_camera_trajectory() -> list[npt.NDArray[np.floating]]:
 
 
 def main():
-
-    work_dpath = Path("/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/pre-processed/camera_paths/")
-    jsond: dict = json.loads((work_dpath / "2025-09-29-11-09-46.pretty.json").read_text())
+    work_dpath = Path(
+        "/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/pre-processed/camera_paths/"
+    )
+    jsond: dict = json.loads(
+        (work_dpath / "2025-09-29-11-09-46.pretty.json").read_text()
+    )
     # homs_w2c = [
     #     np.linalg.inv(np.array(kf["matrix"]).reshape(4, 4) @ FLIP_MAT)
     #     for kf in jsond["keyframes"]
@@ -158,10 +162,18 @@ def main():
         new_entry["camera_to_world"] = hom_ns.flatten().tolist()
         new_camera_path.append(new_entry)
     new_jsond = jsond.copy()
-    new_jsond["seconds"] = 3.0
     new_jsond["camera_path"] = new_camera_path
-    (work_dpath / "2025-09-29-11-09-46.crop_1.json").write_text(json.dumps(new_jsond, indent=2))
 
+    new_jsond["seconds"] = 3.0
+    new_jsond["crop"] = dict(
+        crop_center=[-0.0648839232, 0.0350148000, -0.0483375749],
+        crop_scale=[1.0, 1.6, 1.0],
+        crop_rot=[0.0, 0.0, -1.0438496510],
+        crop_bg_color={"r": 38, "g": 42, "b": 55},
+    )
+    (work_dpath / "2025-09-29-11-09-46.crop_1.json").write_text(
+        json.dumps(new_jsond, indent=2)
+    )
 
 
 if __name__ == "__main__":
