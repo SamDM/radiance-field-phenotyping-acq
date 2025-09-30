@@ -1,5 +1,9 @@
+#show link: set text(fill: blue)
+#show link: underline
+
 Created on #datetime.today().display() by Sam De Meyer. \
-The source of this document is on gitlab: <url>
+The source of this document is on gitlab:\
+https://gitlab.psb.ugent.be/samey-Utilities/radiance-field-phenotyping/-/blob/master/main.typ
 
 #outline()
 
@@ -115,6 +119,10 @@ To get a functional 3D anatomy, we can follow 2 approaches:
 )
 
 = File info
+
+Files available:
+- on Midas at: \ `sftp://midas/home/samey/Safe/Deliveries/2025-09-30 soybean-root-phenotyping/`
+- on Floppy at: https://floppy.psb.ugent.be/index.php/f/19363974
 
 I made a bunch of videos showing off the 3D model of the _best_ video we have,
 which unfortunately is still not very sharp (i.e. the root nodules are blurry in the video).
