@@ -53,3 +53,10 @@ Export:
 ```
 ns-export gaussian-splat --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml --output-dir exports/splat/ --obb_center -0.0648839232 0.0350148000 -0.0483375749 --obb_rotation 0.0000000000 0.0000000000 -1.0438496510 --obb_scale 1.0000000000 1.6000000238 1.0000000000
 ```
+
+```
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_1.json \
+    --output-path renders/pre-processed/crop_1/2025-09-29-11-09-46_crop_1.mp4
+```

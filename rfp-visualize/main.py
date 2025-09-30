@@ -15,17 +15,17 @@ FLIP_MAT = np.array(
 
 
 def look_at(
-    camera_location: np.ndarray,
-    look_at: np.ndarray | None = None,
+    at: npt.NDArray[np.floating],
+    eye: npt.NDArray[np.floating],
     up: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Create a world-to-camera homogeneous transformation matrix.
 
     Args:
-        camera_location: 3D position of the camera in world coordinates (x, y, z)
-        look_at: 3D point the camera is looking at in world coordinates.
+        at: 3D point the camera is looking at in world coordinates.
                  Defaults to origin (0, 0, 0)
+        eye: 3D position of the camera in world coordinates (x, y, z)
         up: 3D vector indicating the "up" direction of the camera (points to -Y in camera frame).
             Defaults to world Z-axis (0, 0, 1) projected to be perpendicular to view direction.
 
@@ -33,21 +33,16 @@ def look_at(
         4x4 homogeneous matrix that transforms world coordinates to camera coordinates.
         Camera frame: +Z forward (look direction), +X right, +Y down
         World frame: +Z up
-
-    Example:
-        >>> cam_pos = np.array([5, 5, 3])
-        >>> look = np.array([0, 0, 0])
-        >>> T_wc = world_to_camera_matrix(cam_pos, look)
     """
-    camera_location = np.asarray(camera_location, dtype=float)
+    eye = np.asarray(eye, dtype=float)
 
-    if look_at is None:
-        look_at = np.array([0.0, 0.0, 0.0])
+    if at is None:
+        at = np.array([0.0, 0.0, 0.0])
     else:
-        look_at = np.asarray(look_at, dtype=float)
+        at = np.asarray(at, dtype=float)
 
     # Camera Z-axis: forward direction (from camera to look_at point)
-    z_cam_world = look_at - camera_location
+    z_cam_world = at - eye
     z_cam_world_norm = np.linalg.norm(z_cam_world)
 
     if z_cam_world_norm < 1e-10:
@@ -68,11 +63,7 @@ def look_at(
 
     # Check if look direction is parallel to up direction
     if abs(np.dot(z_cam_world, world_up)) > 0.9999:
-        # If nearly parallel, choose a different reference vector
-        if abs(world_up[0]) < 0.9:
-            world_up = np.array([1.0, 0.0, 0.0])
-        else:
-            world_up = np.array([0.0, 1.0, 0.0])
+        raise Exception("Up direction and looking direction are parallel")
 
     # Camera X-axis: right direction (perpendicular to both Z and up)
     # Right = forward × up (cross product)
@@ -80,15 +71,15 @@ def look_at(
     x_cam_world = x_cam_world / np.linalg.norm(x_cam_world)
 
     # Camera Y-axis: down direction (perpendicular to both X and Z)
-    # Down = right × forward
-    y_cam_world = np.cross(x_cam_world, z_cam_world)
+    # Down = forward × right
+    y_cam_world = np.cross(z_cam_world, x_cam_world)
 
     # Build rotation matrix (world to camera)
     # Each row represents where a camera axis points in world coordinates
     R_wc = np.vstack([x_cam_world, y_cam_world, z_cam_world])
 
     # Translation: transform camera position to camera frame origin
-    t_wc = -R_wc @ camera_location
+    t_wc = -R_wc @ eye
 
     # Build 4x4 homogeneous matrix
     T_wc = np.eye(4)
@@ -118,35 +109,59 @@ def show_in_rr(
         rr.log(f"cam_{i}", rr_cam)
         rr.log(f"cam_{i}", rr_tf)
 
-        # fp = (hom_c2w @ [0, 0, 0, 1])[:3]
-        # rr.log(f"p_{i}", rr.Points3D(positions=[[fp]], radii=[0.1]))
-
-    # pcd = rr.Asset3D(path="/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/exports/splat/splat.ply")
     rr.log_file_from_path(
         entity_path_prefix="pcd",
         file_path="/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/exports/splat/splat.ply",
     )
 
+def generate_camera_trajectory() -> list[npt.NDArray[np.floating]]:
+    fps = 30
+    secs = 3
+    n = fps * secs
+
+    z = -0.05
+    dist = 0.35
+    center = np.array([-0.06, 0.04, -0.06])
+
+    hom_translate_center = np.eye(4)
+    hom_translate_center[:3, 3] = -center
+    homs_w2c = []
+    for i in range(n):
+        frac_n = i / n
+        frac_rad = 2*np.pi*frac_n
+        x = np.cos(frac_rad) * dist
+        y = np.sin(frac_rad) * dist
+        hom_w2c = look_at((0, 0, 0), (x, y, z)) @ hom_translate_center
+        homs_w2c.append(hom_w2c)
+    return homs_w2c
+
 
 def main():
-    cam_wh = (1920, 1080)
-    cam_f = 1740
-    jsond = json.loads(
-        Path(
-            "/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/pre-processed/camera_paths/2025-09-29-11-09-46.pretty.json"
-        ).read_text()
-    )
+
+    work_dpath = Path("/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/pre-processed/camera_paths/")
+    jsond: dict = json.loads((work_dpath / "2025-09-29-11-09-46.pretty.json").read_text())
     # homs_w2c = [
     #     np.linalg.inv(np.array(kf["matrix"]).reshape(4, 4) @ FLIP_MAT)
     #     for kf in jsond["keyframes"]
     # ]
-    homs_w2c = [
-        look_at([1, 0, 0]),
-        look_at([0, 1, 0]),
-        look_at([-1, 0, 0]),
-        look_at([0, -1, 0]),
-    ]
-    show_in_rr(cam_wh, cam_f, homs_w2c)
+
+    homs_w2c = generate_camera_trajectory()
+    # cam_wh = (1920, 1080)
+    # cam_f = 1740
+    # show_in_rr(cam_wh, cam_f, homs_w2c)
+
+    example: dict = jsond["camera_path"][0]
+    new_camera_path = []
+    for hom_w2c in homs_w2c:
+        hom_ns = np.linalg.inv(hom_w2c) @ np.linalg.inv(FLIP_MAT)
+        new_entry = example.copy()
+        new_entry["camera_to_world"] = hom_ns.flatten().tolist()
+        new_camera_path.append(new_entry)
+    new_jsond = jsond.copy()
+    new_jsond["seconds"] = 3.0
+    new_jsond["camera_path"] = new_camera_path
+    (work_dpath / "2025-09-29-11-09-46.crop_1.json").write_text(json.dumps(new_jsond, indent=2))
+
 
 
 if __name__ == "__main__":
