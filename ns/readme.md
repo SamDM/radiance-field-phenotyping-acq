@@ -177,3 +177,9 @@ Transcode input movie:
 ```
 ffmpeg -i CP-176_4.MOV -c:v libx264 -preset medium -crf 24 -c:a aac -b:a 128k CP-176_4.mp4
 ```
+
+Live preview in NS
+```
+ffmpeg -i "Screencast 2025-09-30 14:23:33.mp4" -f yuv4mpegpipe - | gifski -W 900 --lossy-quality=50 -o "Screencast 2025-09-30 14:23:33.gif" -
+
+```
