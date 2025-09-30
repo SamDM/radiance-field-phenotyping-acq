@@ -57,6 +57,123 @@ ns-export gaussian-splat --load-config outputs/pre-processed/splatfacto/2025-09-
 ```
 ns-render camera-path \
     --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_0.json \
+    --output-path renders/pre-processed/crop_0/2025-09-29-11-09-46_crop_0.mp4
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
     --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_1.json \
     --output-path renders/pre-processed/crop_1/2025-09-29-11-09-46_crop_1.mp4
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_2.json \
+    --output-path renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2.mp4
+```
+
+images
+```
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_2.json \
+    --output-path renders/pre-processed/crop_2/images \
+    --output-format images
+```
+
+depth
+```
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_2.json \
+    --rendered-output-names depth \
+    --depth-near-plane 0.1 \
+    --depth-far-plane 0.5 \
+    --colormap-options.colormap turbo \
+    --colormap-options.invert True \
+    --output-path renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2_depth.mp4
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_2.json \
+    --rendered-output-names rgb depth \
+    --depth-near-plane 0.1 \
+    --depth-far-plane 0.5 \
+    --colormap-options.colormap turbo \
+    --colormap-options.invert True \
+    --output-path renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2_rgb-depth.mp4
+```
+
+nearest cam (doesn't work)
+```
+ns-render camera-path \
+    --load-config outputs/pre-processed/splatfacto/2025-09-29_114726/config.yml \
+    --camera-path-filename pre-processed/camera_paths/2025-09-29-11-09-46.crop_2.json \
+    --render-nearest-camera True \
+    --output-path renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2_nearest.mp4
+```
+
+make gifs
+```
+(
+  VID_NAME="2025-09-29-11-09-46_crop_0"
+  DIR_NAME="crop_0"
+  ffmpeg -i "renders/pre-processed/$DIR_NAME/$VID_NAME.mp4" -f yuv4mpegpipe - | \
+  gifski -o "renders/pre-processed/$DIR_NAME/$VID_NAME.gif" -
+)
+(
+  VID_NAME="2025-09-29-11-09-46_crop_1"
+  DIR_NAME="crop_1"
+  ffmpeg -i "renders/pre-processed/$DIR_NAME/$VID_NAME.mp4" -f yuv4mpegpipe - | \
+  gifski -o "renders/pre-processed/$DIR_NAME/$VID_NAME.gif" -
+)
+(
+  VID_NAME="2025-09-29-11-09-46_crop_2"
+  DIR_NAME="crop_2"
+  ffmpeg -i "renders/pre-processed/$DIR_NAME/$VID_NAME.mp4" -f yuv4mpegpipe - | \
+  gifski -o "renders/pre-processed/$DIR_NAME/$VID_NAME.gif" -
+)
+(
+  VID_NAME="2025-09-29-11-09-46_crop_2_depth"
+  DIR_NAME="crop_2"
+  ffmpeg -i "renders/pre-processed/$DIR_NAME/$VID_NAME.mp4" -f yuv4mpegpipe - | \
+  gifski -o "renders/pre-processed/$DIR_NAME/$VID_NAME.gif" -
+)
+(
+  VID_NAME="2025-09-29-11-09-46_crop_2_rgb-depth"
+  DIR_NAME="crop_2"
+  ffmpeg -i "renders/pre-processed/$DIR_NAME/$VID_NAME.mp4" -f yuv4mpegpipe - | \
+  gifski -o "renders/pre-processed/$DIR_NAME/$VID_NAME.gif" -
+)
+```
+
+Concat videos
+```
+ffmpeg \
+    -f concat \
+    -safe 0 \
+    -i <(printf "file '%s/%s'\n" \
+        "$PWD" renders/pre-processed/crop_0/2025-09-29-11-09-46_crop_0.mp4 \
+        "$PWD" renders/pre-processed/crop_1/2025-09-29-11-09-46_crop_1.mp4 \
+        "$PWD" renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2.mp4 \
+       ) \
+    -c copy \
+    renders/pre-processed/concat.mp4
+
+ffmpeg -i renders/pre-processed/concat.mp4 -f yuv4mpegpipe - | gifski -o renders/pre-processed/concat.gif -
+
+ffmpeg \
+    -f concat \
+    -safe 0 \
+    -i <(printf "file '%s/%s'\n" \
+        "$PWD" renders/pre-processed/crop_0/2025-09-29-11-09-46_crop_0.mp4 \
+        "$PWD" renders/pre-processed/crop_1/2025-09-29-11-09-46_crop_1.mp4 \
+        "$PWD" renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2.mp4 \
+        "$PWD" renders/pre-processed/crop_2/2025-09-29-11-09-46_crop_2_depth.mp4 \
+       ) \
+    -c copy \
+    renders/pre-processed/concat_depth.mp4
+
+ffmpeg -i renders/pre-processed/concat_depth.mp4 -f yuv4mpegpipe - | gifski -o renders/pre-processed/concat_depth.gif -
+```
+
+Transcode input movie:
+```
+ffmpeg -i CP-176_4.MOV -c:v libx264 -preset medium -crf 24 -c:a aac -b:a 128k CP-176_4.mp4
 ```

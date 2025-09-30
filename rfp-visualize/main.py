@@ -137,6 +137,24 @@ def generate_camera_trajectory() -> list[npt.NDArray[np.floating]]:
     return homs_w2c
 
 
+def list_crops() -> list:
+    crop_0 = None
+    crop_1 = dict(
+        crop_center=[-0.0648839232, 0.0350148000, -0.0483375749],
+        crop_scale=[1.0, 1.6, 1.0],
+        crop_rot=[0.0, 0.0, -1.0438496510],
+        crop_bg_color={"r": 38, "g": 42, "b": 55},
+    )
+    crop_2 = dict(
+        crop_center=[-0.0648839232, 0.0350148000, -0.0483375749],
+        crop_scale=[0.6, 0.6, 0.6],
+        crop_rot=[0.0, 0.0, -1.0438496510],
+        crop_bg_color={"r": 38, "g": 42, "b": 55},
+    )
+
+    return [crop_0, crop_1, crop_2]
+
+
 def main():
     work_dpath = Path(
         "/home/samey/Safe/Projects/radiance-field-phenotyping/data/CP-176_4/pre-processed/camera_paths/"
@@ -163,17 +181,13 @@ def main():
         new_camera_path.append(new_entry)
     new_jsond = jsond.copy()
     new_jsond["camera_path"] = new_camera_path
-
     new_jsond["seconds"] = 3.0
-    new_jsond["crop"] = dict(
-        crop_center=[-0.0648839232, 0.0350148000, -0.0483375749],
-        crop_scale=[1.0, 1.6, 1.0],
-        crop_rot=[0.0, 0.0, -1.0438496510],
-        crop_bg_color={"r": 38, "g": 42, "b": 55},
-    )
-    (work_dpath / "2025-09-29-11-09-46.crop_1.json").write_text(
-        json.dumps(new_jsond, indent=2)
-    )
+
+    for i, crop in enumerate(list_crops()):
+        new_jsond["crop"] = crop
+        (work_dpath / f"2025-09-29-11-09-46.crop_{i}.json").write_text(
+            json.dumps(new_jsond, indent=2)
+        )
 
 
 if __name__ == "__main__":
