@@ -183,3 +183,25 @@ Live preview in NS
 ffmpeg -i "Screencast 2025-09-30 14:23:33.mp4" -f yuv4mpegpipe - | gifski -W 900 --lossy-quality=50 -o "Screencast 2025-09-30 14:23:33.gif" -
 
 ```
+
+# Plaatjes & Pintjes
+
+```
+export WORKDIR="/home/samey/Safe/Projects/radiance-field-phenotyping/data/plaatjesenpintjes"
+
+ns-process-data images \
+  --data "$WORKDIR/preproc-images" \
+  --output-dir "$WORKDIR/preproc-ns"
+
+ns-train splatfacto-big \
+  --data "$WORKDIR/preproc-ns" \
+  --output-dir "$WORKDIR/checkpoints-ns" \
+  --downscale_factor=1
+
+ns-export gaussian-splat \
+  --load-config "$WORKDIR/checkpoints-ns/preproc-ns/splatfacto/2025-11-09_210223/config.yml" \
+  --output-dir "$WORKDIR/exports-ns/splat_2025-11-09_210223" \
+  --obb_center 0.0427723397 -0.0291634388 -0.2466881491 \
+  --obb_rotation 0.0000000000 0.0000000000 0.0000000000 \
+  --obb_scale 0.6100000143 0.4799999893 0.8000000119
+```

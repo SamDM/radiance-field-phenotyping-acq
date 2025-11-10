@@ -9,8 +9,20 @@
   copyright = {Apache-2.0},
   keywords = {gaussian-splatting,graphics,reconstruction}
 }
+% == BibTeX quality report for brusseeArthurBrusseeBrush2025:
+% ? Title looks like it was stored in lower-case in Zotero
+% ? unused Library catalog ("GitHub")
+% ? unused originalDate ("2024-02-23T16:50:13Z")
+% ? unused Programming language ("Rust")
 
-@article{kerbl3DGaussianSplatting2023a,
+@misc{ESBLunchMeeting,
+  title = {{{ESB Lunch}} Meeting - {{Application Postdoctoral Fellowship FWO}} - {{Sam De Meyer}}.Pptx},
+  url = {https://vib365-my.sharepoint.com/:p:/r/personal/sam_demeyer_vib_be/_layouts/15/Doc.aspx?sourcedoc=%7B20269F76-406C-45E6-BC69-D1EBAE1FD249%7D&file=ESB%20Lunch%20meeting%20-%20Application%20Postdoctoral%20Fellowship%20FWO%20-%20Sam%20De%20Meyer.pptx&action=edit&mobileredirect=true},
+  urldate = {2025-10-05},
+  file = {/home/samey/Zotero/storage/HE34X69V/Doc.html}
+}
+
+@article{kerbl3DGaussianSplatting2023,
   title = {{{3D Gaussian Splatting}} for {{Real-Time Radiance Field Rendering}}},
   author = {Kerbl, Bernhard and Kopanas, Georgios and Leimkuehler, Thomas and Drettakis, George},
   year = {2023},
@@ -22,11 +34,15 @@
   issn = {0730-0301, 1557-7368},
   doi = {10.1145/3592433},
   url = {https://dl.acm.org/doi/10.1145/3592433},
-  urldate = {2025-09-30},
+  urldate = {2025-06-08},
   abstract = {Radiance Field methods have recently revolutionized novel-view synthesis of scenes captured with multiple photos or videos. However, achieving high visual quality still requires neural networks that are costly to train and render, while recent faster methods inevitably trade off speed for quality. For unbounded and complete scenes (rather than isolated objects) and 1080p resolution rendering, no current method can achieve real-time display rates. We introduce three key elements that allow us to achieve state-of-the-art visual quality while maintaining competitive training times and importantly allow high-quality real-time ({$\geq$} 30 fps) novel-view synthesis at 1080p resolution. First, starting from sparse points produced during camera calibration, we represent the scene with 3D Gaussians that preserve desirable properties of continuous volumetric radiance fields for scene optimization while avoiding unnecessary computation in empty space; Second, we perform interleaved optimization/density control of the 3D Gaussians, notably optimizing anisotropic covariance to achieve an accurate representation of the scene; Third, we develop a fast visibility-aware rendering algorithm that supports anisotropic splatting and both accelerates training and allows realtime rendering. We demonstrate state-of-the-art visual quality and real-time rendering on several established datasets.},
   langid = {english},
-  file = {/home/samey/Zotero/storage/59F8L2HS/Kerbl et al. - 2023 - 3D Gaussian Splatting for Real-Time Radiance Field Rendering.pdf}
+  file = {/home/samey/Zotero/storage/KUDPYVLS/Kerbl et al. - 2023 - 3D Gaussian Splatting for Real-Time Radiance Field Rendering.pdf}
 }
+% == BibTeX quality report for kerbl3DGaussianSplatting2023:
+% ? Title looks like it was stored in title-case in Zotero
+% ? unused Journal abbreviation ("ACM Trans. Graph.")
+% ? unused Library catalog ("DOI.org (Crossref)")
 
 @misc{mildenhallNeRFRepresentingScenes2020,
   title = {{{NeRF}}: {{Representing Scenes}} as {{Neural Radiance Fields}} for {{View Synthesis}}},
@@ -47,6 +63,39 @@
   note = {Comment: ECCV 2020 (oral). Project page with videos and code: http://tancik.com/nerf},
   file = {/home/samey/Zotero/storage/SYI7WJIB/Mildenhall et al. - 2020 - NeRF Representing Scenes as Neural Radiance Fields for View Synthesis.pdf;/home/samey/Zotero/storage/DJ9SF3AU/2003.html}
 }
+% == BibTeX quality report for mildenhallNeRFRepresentingScenes2020:
+% ? Title looks like it was stored in title-case in Zotero
+
+@misc{raviSAM2Segment2024,
+  title = {{{SAM}} 2: {{Segment Anything}} in {{Images}} and {{Videos}}},
+  shorttitle = {{{SAM}} 2},
+  author = {Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and R{\"a}dle, Roman and Rolland, Chloe and Gustafson, Laura and Mintun, Eric and Pan, Junting and Alwala, Kalyan Vasudev and Carion, Nicolas and Wu, Chao-Yuan and Girshick, Ross and Doll{\'a}r, Piotr and Feichtenhofer, Christoph},
+  year = {2024},
+  month = oct,
+  number = {arXiv:2408.00714},
+  eprint = {2408.00714},
+  primaryclass = {cs},
+  publisher = {arXiv},
+  doi = {10.48550/arXiv.2408.00714},
+  url = {http://arxiv.org/abs/2408.00714},
+  urldate = {2025-10-13},
+  abstract = {We present Segment Anything Model 2 (SAM 2), a foundation model towards solving promptable visual segmentation in images and videos. We build a data engine, which improves model and data via user interaction, to collect the largest video segmentation dataset to date. Our model is a simple transformer architecture with streaming memory for real-time video processing. SAM 2 trained on our data provides strong performance across a wide range of tasks. In video segmentation, we observe better accuracy, using 3x fewer interactions than prior approaches. In image segmentation, our model is more accurate and 6x faster than the Segment Anything Model (SAM). We believe that our data, model, and insights will serve as a significant milestone for video segmentation and related perception tasks. We are releasing our main model, dataset, as well as code for model training and our demo.},
+  archiveprefix = {arXiv},
+  keywords = {Computer Science - Artificial Intelligence,Computer Science - Computer Vision and Pattern Recognition,Computer Science - Machine Learning},
+  note = {Comment: Website: https://ai.meta.com/sam2},
+  file = {/home/samey/Zotero/storage/SPFV6KE5/Ravi et al. - 2024 - SAM 2 Segment Anything in Images and Videos.pdf;/home/samey/Zotero/storage/BEL6Y833/2408.html}
+}
+% == BibTeX quality report for raviSAM2Segment2024:
+% ? Title looks like it was stored in title-case in Zotero
+
+@misc{rf-detr,
+  title = {{{RF-DETR}}},
+  author = {Robinson, Isaac and Robicheaux, Peter and Popov, Matvei and Ramanan, Deva and Peri, Neehar},
+  year = {2025},
+  url = {https://github.com/roboflow/rf-detr},
+  copyright = {Apache-2.0},
+  note = {SOTA Real-Time Object Detection Model}
+}
 
 @inproceedings{schoenberger2016mvs,
   title = {Pixelwise View Selection for Unstructured Multi-View Stereo},
@@ -54,6 +103,8 @@
   author = {Sch{\"o}nberger, Johannes Lutz and Zheng, Enliang and Pollefeys, Marc and Frahm, Jan-Michael},
   year = {2016}
 }
+% == BibTeX quality report for schoenberger2016mvs:
+% ? Unsure about the formatting of the booktitle
 
 @inproceedings{schoenberger2016sfm,
   title = {Structure-from-Motion Revisited},
@@ -61,6 +112,8 @@
   author = {Sch{\"o}nberger, Johannes Lutz and Frahm, Jan-Michael},
   year = {2016}
 }
+% == BibTeX quality report for schoenberger2016sfm:
+% ? Unsure about the formatting of the booktitle
 
 @inproceedings{tancikNerfstudioModularFramework2023,
   title = {Nerfstudio: {{A Modular Framework}} for {{Neural Radiance Field Development}}},
@@ -70,3 +123,5 @@
   series = {{{SIGGRAPH}} '23},
   url = {https://docs.nerf.studio}
 }
+% == BibTeX quality report for tancikNerfstudioModularFramework2023:
+% ? Title looks like it was stored in title-case in Zotero
