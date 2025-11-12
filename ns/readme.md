@@ -205,3 +205,22 @@ ns-export gaussian-splat \
   --obb_rotation 0.0000000000 0.0000000000 0.0000000000 \
   --obb_scale 0.6100000143 0.4799999893 0.8000000119
 ```
+
+# Plaatjes & Pintjes
+
+Athal
+
+```
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal
+
+ns-process-data images --data "developed" --output-dir "ns"
+ns-train splatfacto-big colmap --data "ns" --downscale_factor=1
+ns-train splatfacto-big colmap --data "ns" --downscale_factor=2
+ns-train splatfacto colmap --data "ns" --downscale_factor=2
+```
+
+On VSC
+
+```
+ns-process-data images --data "inp" --output-dir "ns"
+```
