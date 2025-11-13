@@ -290,6 +290,13 @@ ns-render camera-path \
   --output-path renders/ns/2025-11-13-14-18-42/images
 ```
 
+Even better (follows from above)
+```
+ns-train splatfacto-big colmap --data "ns" --downscale_factor=1
+
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-11-13_174614/config.yml --output-dir exports/splat/ --obb_center -0.0470861622 -0.0442411114 -0.0000000000 --obb_rotation 0.0000000000 0.0000000000 0.0000000000 --obb_scale 0.5000000000 0.5000000000 1.0000000000
+```
+
 On VSC
 
 ```
