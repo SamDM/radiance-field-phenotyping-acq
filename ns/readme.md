@@ -217,10 +217,84 @@ ns-process-data images --data "developed" --output-dir "ns"
 ns-train splatfacto-big colmap --data "ns" --downscale_factor=1
 ns-train splatfacto-big colmap --data "ns" --downscale_factor=2
 ns-train splatfacto colmap --data "ns" --downscale_factor=2
+
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-11-12_190058/config.yml --output-dir exports/splat/ --obb_center -0.0419306440 0.3051804696 -0.3755707976 --obb_rotation 0.0000000000 0.0000000000 0.0000000000 --obb_scale 0.5000000000 0.5000000000 1.0000000000
+
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-subset
+
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-2
+
+ns-process-data images \
+  --data "developed" \
+  --matching-method exhaustive \
+  --sfm-tool hloc \
+  --output-dir "ns"
+
+```
+
+Second attempt at office
+
+```
+apptainer shell --nvccli ns/nerfstudio_latest.sif
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-2
+
+ns-process-data images \
+  --data "developed" \
+  --matching-method exhaustive \
+  --output-dir "ns"
+
+apptainer shell --nvccli ns/nerfstudio_latest.sif
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-3
+
+ns-process-data images \
+  --data "developed" \
+  --output-dir "ns"
+
+ns-train splatfacto-big colmap --data "ns" --downscale_factor=1
+
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-11-13_114624/config.yml --output-dir exports/splat/ --obb_center 0.0000000000 0.0000000000 0.0000000000 --obb_rotation 0.0000000000 0.0000000000 0.0000000000 --obb_scale 1.0000000000 1.0000000000 1.0000000000
+
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-4
+
+ns-process-data images \
+  --data "developed" \
+  --matching-method exhaustive \
+  --output-dir "ns"
+
+ns-train splatfacto-big colmap --data "ns" --downscale_factor=1
+ns-train splatfacto colmap --data "ns" --downscale_factor=1
+```
+
+Finally a good one!
+```
+
+cd /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-5
+
+ns-process-data images \
+  --data "developed" \
+  --output-dir "ns"
+
+ns-train splatfacto colmap --data "ns" --downscale_factor=2
+
+ns-export gaussian-splat --load-config outputs/unnamed/splatfacto/2025-11-13_133532/config.yml --output-dir exports/splat/ --obb_center -0.0451129124 -0.0393125892 -0.2013819355 --obb_rotation 0.0000000000 0.0000000000 0.0000000000 --obb_scale 0.5000000000 0.5000000000 1.0000000000
+
+ns-viewer --load-config outputs/unnamed/splatfacto/2025-11-13_133532/config.yml
+
+ns-render camera-path \
+  --load-config outputs/unnamed/splatfacto/2025-11-13_133532/config.yml \
+  --camera-path-filename /home/samey/Safe/Projects/radiance-field-phenotyping/data/athal-5/ns/camera_paths/2025-11-13-14-18-42.json \
+  --rendered-output-names rgb depth \
+  --colormap-options.colormap turbo \
+  --colormap-options.invert True \
+  --output-format images \
+  --output-path renders/ns/2025-11-13-14-18-42/images
 ```
 
 On VSC
 
 ```
-ns-process-data images --data "inp" --output-dir "ns"
+ns-process-data images \
+  --data "developed" \
+  --matching-method exhaustive \
+  --output-dir "ns"
 ```
