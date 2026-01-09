@@ -1,5 +1,1 @@
-*.sif
-apptainer-tmp/*
-ns/data/*
-ns/outputs/*
 *.pdf

@@ -14,7 +14,7 @@ _neural radiance fields_ @mildenhallNeRFRepresentingScenes2020,
 an entirely new method to create 3D scenes from a collection of 2D images.
 
 Since then, the field developed rapidly, and currently a variant of this
-technique called _Gaussian splatting_ @kerbl3DGaussianSplatting2023a is
+technique called _Gaussian splatting_ @kerbl3DGaussianSplatting2023 is
 among the best methods.
 
 This method works in two steps:
@@ -52,7 +52,7 @@ from the 3D gaussians, where each gaussian is figuratively splatted onto the
 camera lens for each 2D input image, like flies splatted against a car
 windshield when driving on a highway in summer.
 
-The orignal method @kerbl3DGaussianSplatting2023a is implemented in Nerfstudio @tancikNerfstudioModularFramework2023
+The orignal method @kerbl3DGaussianSplatting2023 is implemented in Nerfstudio @tancikNerfstudioModularFramework2023
 and Brush @brusseeArthurBrusseeBrush2025.
 
 = Next steps
