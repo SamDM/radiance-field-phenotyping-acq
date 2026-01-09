@@ -55,9 +55,73 @@ windshield when driving on a highway in summer.
 The orignal method @kerbl3DGaussianSplatting2023 is implemented in Nerfstudio @tancikNerfstudioModularFramework2023
 and Brush @brusseeArthurBrusseeBrush2025.
 
-= Next steps
+= 2026: second attempt
 
-== Better Imaging Setup
+== Hardware
+
+#[
+  #show table.cell.where(y: 0): set text(weight: "bold")
+
+  #table(
+    columns: 5,
+    table.header([what], [item], [qty], [price], [where to acquire]),
+    //
+    [Camera],
+    [Basler ace 2 a2A3536-9gcBAS],
+    [2],
+    [#sym.euro 399],
+    [#link("https://www.baslerweb.com/en/shop/a2a3536-9gcbas/")],
+    //
+    [Lens],
+    [Basler Lens C11-0824-12M f8.5mm],
+    [2],
+    [#sym.euro 259],
+    [#link("https://www.baslerweb.com/en/shop/basler-lens-c11-0824-12m-f8-5mm")],
+    //
+    [Camera data cable],
+    [Cable GigE, Cat6a, RJ45 sl hor/RJ45, S, 5 m],
+    [2],
+    [#sym.euro 19],
+    [#link("https://www.baslerweb.com/en/shop/cable-gige-cat6a-rj45-sl-hor-rj45-s-5-m/")],
+    //
+    [POE capable network switch],
+    [Netgear GS305Pv3],
+    [1],
+    [#sym.euro 60],
+    [#link("https://www.coolblue.be/nl/product/956655/netgear-gs305pv3.html")],
+    //
+    [network switch #sym.arrow.l.r PC data cable],
+    [C2G Netwerkkabel CAT6 0,3 meter],
+    [1],
+    [#sym.euro 19.19],
+    [#link("https://www.coolblue.be/nl/product/956655/netgear-gs305pv3.html")],
+    //
+    [PC],
+    [Raspberry Pi 5 - 16GB],
+    [1],
+    [#sym.euro 158.95],
+    [#link("https://www.raspberrystore.nl/PrestaShop/nl/raspberry-pi-5/639-raspberry-pi-5-16gb-5056561803333.html")],
+    //
+    [PC heat sink],
+    [Active cooler for Raspberry Pi 5],
+    [1],
+    [#sym.euro 5.95],
+    [#link("https://www.raspberrystore.nl/PrestaShop/nl/raspberry-pi-5/510-active-cooler-voor-de-raspberry-pi-5-5056561803357.html")],
+    //
+    [PC - other],
+    [TODO: NMVE shield + NVME storage + case + power supply + usb to eth convertor],
+    [],
+    [],
+    [],
+    //
+    [Mounting], [Orbital rail], [1], [], [built at VIB],
+  )
+]
+
+
+= 2025-09: first attempt 
+
+== Need Better Imaging Setup
 
 Now the camera/lens combination is suboptimal. As can be seen in the input video (next section)
 most of the image on each frame is background. The image resolution of the root nodules is low (@root-img).
@@ -73,7 +137,7 @@ full sensor resolution can be used without introducing blur.
 ) <root-img>
 
 
-== Anatomical annotation
+== Next step: Anatomical annotation
 
 A 3D model of a plant structure on its own is not worth much.
 We need to know which parts of the model correspond to which anatomical
@@ -118,7 +182,7 @@ To get a functional 3D anatomy, we can follow 2 approaches:
   ],
 )
 
-= File info
+== File info
 
 Files available:
 - on Midas at: \ `sftp://midas/home/samey/Safe/Deliveries/2025-09-30 soybean-root-phenotyping/`
@@ -150,9 +214,9 @@ because some presentation software does not work well with `.mp4` files (e.g.
 google slides).
 And because making high-quality/low-filesize gifs is not straightforward.
 
-= Protocol (WIP, not up to date)
+== Protocol
 
-== Data Acquisition Setup
+=== Data Acquisition Setup
 
 === Acquisition room
 
