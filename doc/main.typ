@@ -56,11 +56,13 @@ windshield when driving on a highway in summer.
 The orignal method @kerbl3DGaussianSplatting2023 is implemented in Nerfstudio @tancikNerfstudioModularFramework2023
 and Brush @brusseeArthurBrusseeBrush2025.
 
-= 2026: second attempt
+= Implementations
 
-== System architecture
+== 2026: second attempt
 
-=== Overview
+=== System architecture
+
+==== Overview
 
 There are two cameras mounted on an 1m diameter orbital rail.
 Both cameras are connected and powered with a single RJ45 data cable to a small
@@ -153,13 +155,37 @@ Some additional notes:
   - The more expensive data cables from basler are used for connecting directly to the cameras.
     These are extra-strong cables with pin-screws to attach to the cameras.
     This is required because the cameras will move around, putting strain on the cables.
-  - The cables between the POE switches and mini-PC
+  - The cables between the POE switches and mini-PC need to meet the cat6 standard,
+    to allow fast enough data transfer. But they won't experience strain.
+  - We should mount both cameras on a single solid piece of material, such that they don't
+    move with respect to each other.
+    - This gives extra constrains to the camera geometry solver
+      (i.e. the "bundle adjustment" step, see above).
+      This will result in more precise camera calibration, and a better overall reconstruction quality.
+    - We should also strap both data cables to this solid piece of material, to
+      reduce strain on the cable-camera connection.
+    - We should tie-wrap both data cables together, or use some protective sleeve or tape to bind them together.
+      Since they will have same start and end locations.
+      Reduces risk of entanglement + gives extra robustness. 
+  - We can screw/tie-wrap both POE injectors, the mini-PC and the power distribution plug
+    on a simple wooden plank
+    (can be anything, i.e. a piece from a shipping crate that would have been thrown away).
+    We must space the PC and POE injectors apart a little, to allow heat to escape.
+    - Then we can easily move the setup around. I.e. we'll have a moveable "plug
+      and play" setup, which can just plug into a wall power socket + LAN socket
+      and it works.
+    - If we really want to make it a self-contained portable device,
+      we could even attach a cheap touch screen to that plank,
+      such that the user can control the setup with the screen.
+      But not important now.
+
 - Software:
   - The mini-PC is not very powerfull and may have difficulties compressing the
-    images _live_ to PNG.  This is OK, the PC has additional time to compress and
-    upload the images after each acquisiton, while the operator is changing the
-    subject to be imaged.
-    Given the image compression and extra time budget, we don't a high-bandwith wall socket.
+    images _live_ to PNG.  This is OK, the PC has additional
+    time to compress and upload the images after each acquisiton, while the user
+    is changing the subject to be imaged.
+    Given the image compression and extra time budget, we don't need a
+    high-bandwith wall socket.
   - The cameras will be set to a continuous 2FPS trigger. The images can be
     subsampled later on the Midas server.
   - I expect that around 200 12MP images (100 from each camera) will more be
@@ -169,13 +195,15 @@ Some additional notes:
     next steps:
     1. Compressing the PNGs to a high-quality video storage format.
       This is expected to reduce storage with (roughly) a factor 20.
+      Note that PNG is a lossless format,
+      so there is only minor data loss after video compression.
     2. Running the actual 3D reconstruction algorithm.
   - Altough this is not the primary goal,
     both cameras will function as a vertical stereo pair.
     If the default 3D reconstruction has shortcomings, we can still enhance the
     reconstruction with depth cues from stereo depth estimation.
 
-=== List of components
+==== List of components
 
 #[
   #show table.cell.where(y: 0): set text(weight: "bold")
@@ -226,9 +254,9 @@ Some additional notes:
 
 
 
-= 2025-09: first attempt
+== 2025-09: first attempt
 
-== Need Better Imaging Setup
+=== Need Better Imaging Setup
 
 Now the camera/lens combination is suboptimal. As can be seen in the input video (next section)
 most of the image on each frame is background. The image resolution of the root nodules is low (@root-img).
@@ -244,7 +272,7 @@ full sensor resolution can be used without introducing blur.
 ) <root-img>
 
 
-== Next step: Anatomical annotation
+=== Next step: Anatomical annotation
 
 A 3D model of a plant structure on its own is not worth much.
 We need to know which parts of the model correspond to which anatomical
@@ -289,7 +317,7 @@ To get a functional 3D anatomy, we can follow 2 approaches:
   ],
 )
 
-== File info
+=== File info
 
 Files available:
 - on Midas at: \ `sftp://midas/home/samey/Safe/Deliveries/2025-09-30 soybean-root-phenotyping/`
@@ -321,11 +349,11 @@ because some presentation software does not work well with `.mp4` files (e.g.
 google slides).
 And because making high-quality/low-filesize gifs is not straightforward.
 
-== Protocol
+=== Protocol
 
-=== Data Acquisition Setup
+==== Data Acquisition Setup
 
-=== Acquisition room
+==== Acquisition room
 
 - Print aruco markers on dibond plate, or order a plate
   - Put the plate on a table, below the plant
@@ -338,7 +366,7 @@ And because making high-quality/low-filesize gifs is not straightforward.
 - Make sure there are clear landmarks all around the room in which you take the images
 
 
-=== Camera setup
+==== Camera setup
 
 - Change f-stop (i.e. size of the aperture of the camera).
   We should try to set the f-stop as high as possible.
@@ -371,9 +399,7 @@ And because making high-quality/low-filesize gifs is not straightforward.
 - Finally, know how to transfer images to a PC.
 
 
-=== Image capture
-
-=== How to a video for 3D reconstruction
+==== How to make a video for 3D reconstruction
 
 - Place the plant in position
 - Place the ID tag on the table, below the plant
