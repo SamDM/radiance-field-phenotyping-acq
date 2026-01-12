@@ -59,6 +59,62 @@ and Brush @brusseeArthurBrusseeBrush2025.
 
 == Hardware
 
+=== Overview
+
+There are two cameras mounted on an 1m diameter orbital rail.
+Both cameras are connected and powered with a single RJ45 data cable to a small
+_soft router_ type mini-PC.
+There is a POE injector in between each camera and the mini-PC to provide them with electrical power.
+
+The mini-PC has the following functions:
+1. Run the basler software which controls the cameras, this is used to:
+  1. clock-sync both cameras using NTP.
+  2. trigger both cameras.
+  3. acquire the raw images from the basler cameras.
+2. Compress the acquired images to PNG.
+3. Upload the acquired images to the PSB midas server through a wall socket.
+
+
+// TODO: instert a diagram here (top-down = from left to right):
+// Orbital rail <-> camera 1
+// Orbital rail <-> camera 2
+// Camera 1 <-cat6-> POE 1 <-cat6-> mini-PC
+// Camera 2 <-cat6-> POE 1 <-cat6-> mini-PC
+// POE 1 <-power cable-> distribution plug
+// POE 2 <-power cable-> distribution plug
+// mini-PC <-power cable-> distributuion plug
+// mini-PC <-cat6-> wall LAn socket
+// distribution plut <-power cable-> wall power socket
+
+Some additional notes:
+- Hardware:
+  - All components have a maximum data throughput of 2.5 Gigabit (2.5 Mbps).
+    This is required to allow fast data acquistion.
+    I.e. a slower connection would require slowing down the camera movement on the
+    orbital rail to allow it to send data over in time.
+  - The more expensive data cables from basler are used for connecting directly to the cameras.
+    These are extra-strong cables with pin-screws to attach to the cameras.
+    This is required because the cameras will move around, putting strain on the cables.
+  - The cables between the POE switches and mini-PC
+- Software:
+  - The mini-PC is not very powerfull and may have difficulties compressing the
+    images _live_ to PNG.  This is OK, the PC has additional time to compress and
+    upload the images after each acquisiton, while the operator is changing the
+    subject to be imaged.
+    Given the image compression and extra time budget, we don't a high-bandwith wall socket.
+  - The cameras will be set to a continuous 2FPS trigger. The images can be
+    subsampled later on the Midas server.
+  - I expect that around 200 12MP images (100 from each camera) will more be
+    more than sufficient for a good 3D reconstruction. This is based on testing
+    with a handheld camera (see e.g. https://superspl.at/view?id=201de194).
+  - Dedicated software can run on the midas high performance compute cluster for
+    next steps:
+    1. Compressing the PNGs to a high-quality video storage format.
+       This is expected to reduce storage with (roughly) a factor 20.
+    2. Running the actual 3D reconstruction algorithm.
+
+=== List of components
+
 #[
   #show table.cell.where(y: 0): set text(weight: "bold")
 
@@ -84,39 +140,28 @@ and Brush @brusseeArthurBrusseeBrush2025.
     [#sym.euro 19],
     [#link("https://www.baslerweb.com/en/shop/cable-gige-cat6a-rj45-sl-hor-rj45-s-5-m/")],
     //
-    [POE capable network switch],
-    [Netgear GS305Pv3],
-    [1],
-    [#sym.euro 60],
-    [#link("https://www.coolblue.be/nl/product/956655/netgear-gs305pv3.html")],
+    [POE injector],
+    [TP-LINK TL-POE260S 2.5G PoE+ Injector],
+    [2],
+    [#sym.euro 22.48],
+    [#link("https://www.amazon.com.be/-/en/TP-LINK-TL-POE260S-2-5G-PoE-Injector/dp/B0C4SN1YJG")],
     //
     [network switch #sym.arrow.l.r PC data cable],
     [C2G Netwerkkabel CAT6 0,3 meter],
-    [1],
-    [#sym.euro 19.19],
-    [#link("https://www.coolblue.be/nl/product/956655/netgear-gs305pv3.html")],
+    [2],
+    [#sym.euro 19.99],
+    [#link("https://www.coolblue.be/nl/product/960919/c2g-netwerkkabel-cat6-0-3-meter.html")],
     //
     [PC],
-    [Raspberry Pi 5 - 16GB],
+    [CWWK N100 fanless mini-PC - 4 x 2.5G RJ45 LAN],
     [1],
-    [#sym.euro 158.95],
-    [#link("https://www.raspberrystore.nl/PrestaShop/nl/raspberry-pi-5/639-raspberry-pi-5-16gb-5056561803333.html")],
-    //
-    [PC heat sink],
-    [Active cooler for Raspberry Pi 5],
-    [1],
-    [#sym.euro 5.95],
-    [#link("https://www.raspberrystore.nl/PrestaShop/nl/raspberry-pi-5/510-active-cooler-voor-de-raspberry-pi-5-5056561803357.html")],
-    //
-    [PC - other],
-    [TODO: NMVE shield + NVME storage + case + power supply + usb to eth convertor],
-    [],
-    [],
-    [],
+    [#sym.euro 328.74],
+    [#link("https://www.amazon.com.be/-/en/Firewall-Appliance-Fanless-Computer-OPNsense/dp/B0DNXQ6GRV")],
     //
     [Mounting], [Orbital rail], [1], [], [built at VIB],
   )
 ]
+
 
 
 = 2025-09: first attempt 
