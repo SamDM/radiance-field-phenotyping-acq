@@ -248,7 +248,19 @@ Some additional notes:
     [#sym.euro 328.74],
     [#link("https://www.amazon.com.be/-/en/Firewall-Appliance-Fanless-Computer-OPNsense/dp/B0DNXQ6GRV")],
     //
-    [Mounting], [Orbital rail], [1], [], [built at VIB],
+    [Camera mounting],
+    [M3 screws, 4mm deep],
+    [6],
+    [],
+    [available at VIB?],
+    //
+    [Camera mounting], [Orbital rail], [1], [], [built at VIB],
+    //
+    [Small/consumable components],
+    [Duct tape, tie-wraps, screws, wooden board, etc.],
+    [],
+    [],
+    [available at VIB?],
   )
 ]
 
