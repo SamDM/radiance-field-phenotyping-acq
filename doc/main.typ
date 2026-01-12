@@ -57,7 +57,7 @@ and Brush @brusseeArthurBrusseeBrush2025.
 
 = 2026: second attempt
 
-== Hardware
+== System architecture
 
 === Overview
 
@@ -75,16 +75,125 @@ The mini-PC has the following functions:
 3. Upload the acquired images to the PSB midas server through a wall socket.
 
 
-// TODO: instert a diagram here (top-down = from left to right):
-// Orbital rail <-> camera 1
-// Orbital rail <-> camera 2
-// Camera 1 <-cat6-> POE 1 <-cat6-> mini-PC
-// Camera 2 <-cat6-> POE 1 <-cat6-> mini-PC
-// POE 1 <-power cable-> distribution plug
-// POE 2 <-power cable-> distribution plug
-// mini-PC <-power cable-> distributuion plug
-// mini-PC <-cat6-> wall LAn socket
-// distribution plut <-power cable-> wall power socket
+#figure(
+  {
+    import "@preview/cetz:0.4.2"
+    cetz.canvas({
+      import cetz.draw: *
+
+      // Define node styles
+      let cam-style = (fill: rgb("#E3F2FD"), stroke: blue)
+      let poe-style = (fill: rgb("#FFF3E0"), stroke: orange)
+      let pc-style = (fill: rgb("#E8F5E9"), stroke: green.darken(20%))
+      let wall-style = (fill: rgb("#F5F5F5"), stroke: gray)
+      let rect-radius = 0.15  // Rounded corner radius for rectangles
+      let text-size = 7pt  // Smaller text size for components
+
+      // Connection styles
+      let data-line = (stroke: (paint: blue, thickness: 2pt))
+      let power-line = (stroke: (paint: red, thickness: 2pt, dash: "dashed"))
+      let rail-stroke = (stroke: (paint: purple, thickness: 3pt))
+
+      // Draw orbital rail as a ring on the left
+      let rail-center = (1.5, 3)
+      let rail-radius = 1.2
+      circle(rail-center, radius: rail-radius, ..rail-stroke, fill: none, name: "rail-ring")
+
+      // Draw subject node in the center of the orbital rail
+      let subject-radius = 0.5
+      circle(rail-center, radius: subject-radius, fill: green.lighten(60%), stroke: green.darken(20%), name: "subject")
+      content(rail-center, text(size: text-size)[subject])
+
+      // Label for orbital rail
+      content((rail-center.at(0), rail-center.at(1) - rail-radius - 0.5), text(size: 9pt)[Orbital rail])
+
+      // Layout positions - cameras on the right edge of the ring
+      let cam-offset = 0.3  // Vertical spacing between cameras
+      let positions = (
+        cam1: (rail-center.at(0) + rail-radius, rail-center.at(1) + cam-offset),  // Upper camera on ring edge
+        cam2: (rail-center.at(0) + rail-radius, rail-center.at(1) - cam-offset),  // Lower camera on ring edge (vertical stereo pair)
+        poe1: (5.5, 4),
+        poe2: (5.5, 2),
+        pc: (8.5, 3),
+        dist-plug: (8.5, 0),
+        wall-lan: (11.5, 3),
+        wall-power: (11.5, 0),  // Aligned vertically with wall-lan
+      )
+
+      // Draw camera nodes on the ring as rounded rectangles
+      let cam-width = 1.1
+      let cam-height = 0.5
+      rect((positions.cam1.at(0) - cam-width/2, positions.cam1.at(1) - cam-height/2),
+           (positions.cam1.at(0) + cam-width/2, positions.cam1.at(1) + cam-height/2),
+           ..cam-style, radius: rect-radius, name: "cam1")
+      content((positions.cam1.at(0), positions.cam1.at(1)), text(size: text-size)[Camera 1])
+
+      rect((positions.cam2.at(0) - cam-width/2, positions.cam2.at(1) - cam-height/2),
+           (positions.cam2.at(0) + cam-width/2, positions.cam2.at(1) + cam-height/2),
+           ..cam-style, radius: rect-radius, name: "cam2")
+      content((positions.cam2.at(0), positions.cam2.at(1)), text(size: text-size)[Camera 2])
+
+      // Draw other nodes as rounded rectangles
+      let poe-width = 0.7
+      let poe-height = 0.5
+      rect((positions.poe1.at(0) - poe-width/2, positions.poe1.at(1) - poe-height/2),
+           (positions.poe1.at(0) + poe-width/2, positions.poe1.at(1) + poe-height/2),
+           ..poe-style, radius: rect-radius, name: "poe1")
+      content((positions.poe1.at(0), positions.poe1.at(1)), text(size: text-size)[POE 1])
+
+      rect((positions.poe2.at(0) - poe-width/2, positions.poe2.at(1) - poe-height/2),
+           (positions.poe2.at(0) + poe-width/2, positions.poe2.at(1) + poe-height/2),
+           ..poe-style, radius: rect-radius, name: "poe2")
+      content((positions.poe2.at(0), positions.poe2.at(1)), text(size: text-size)[POE 2])
+
+      let pc-width = 0.9
+      let pc-height = 0.5
+      rect((positions.pc.at(0) - pc-width/2, positions.pc.at(1) - pc-height/2),
+           (positions.pc.at(0) + pc-width/2, positions.pc.at(1) + pc-height/2),
+           ..pc-style, radius: rect-radius, name: "pc")
+      content((positions.pc.at(0), positions.pc.at(1)), text(size: text-size)[mini-PC])
+
+      let wall-width = 2.3
+      let wall-height = 0.5
+      rect((positions.dist-plug.at(0) - wall-width/2, positions.dist-plug.at(1) - wall-height/2),
+           (positions.dist-plug.at(0) + wall-width/2, positions.dist-plug.at(1) + wall-height/2),
+           ..wall-style, radius: rect-radius, name: "dist")
+      content((positions.dist-plug.at(0), positions.dist-plug.at(1)), text(size: text-size)[distribution plug])
+
+      rect((positions.wall-lan.at(0) - wall-width/2, positions.wall-lan.at(1) - wall-height/2),
+           (positions.wall-lan.at(0) + wall-width/2, positions.wall-lan.at(1) + wall-height/2),
+           ..wall-style, radius: rect-radius, name: "wlan")
+      content((positions.wall-lan.at(0), positions.wall-lan.at(1)), text(size: text-size)[wall LAN socket])
+
+      rect((positions.wall-power.at(0) - wall-width/2, positions.wall-power.at(1) - wall-height/2),
+           (positions.wall-power.at(0) + wall-width/2, positions.wall-power.at(1) + wall-height/2),
+           ..wall-style, radius: rect-radius, name: "wpower")
+      content((positions.wall-power.at(0), positions.wall-power.at(1)), text(size: text-size)[wall power socket])
+
+      // Draw connections
+      // Data connections (Cat6)
+      line("cam1.east", "poe1.west", ..data-line, mark: (end: ">", start: ">"))
+
+      line("cam2.east", "poe2.west", ..data-line, mark: (end: ">", start: ">"))
+
+      line("poe1.east", "pc.west", ..data-line, mark: (end: ">", start: ">"))
+
+      line("poe2.east", "pc.west", ..data-line, mark: (end: ">", start: ">"))
+
+      line("pc.east", "wlan.west", ..data-line, mark: (end: ">", start: ">"))
+
+      // Power connections
+      line("poe1.south", "dist.north", ..power-line)
+
+      line("poe2.south", "dist.north", ..power-line)
+
+      line("pc.south", "dist.north", ..power-line)
+
+      line("dist.east", "wpower.west", ..power-line)
+    })
+  },
+  caption: [System architecture diagram showing data (blue solid), power (red dashed) connections. Cameras are mounted as a vertical stereo pair on the orbital rail (purple ring)],
+)
 
 Some additional notes:
 - Hardware:
@@ -112,6 +221,10 @@ Some additional notes:
     1. Compressing the PNGs to a high-quality video storage format.
        This is expected to reduce storage with (roughly) a factor 20.
     2. Running the actual 3D reconstruction algorithm.
+  - Altough this is not the primary goal,
+    both cameras will function as a vertical stereo pair.
+    If the default 3D reconstruction has shortcomings, we can still enhance the
+    reconstruction with depth cues from stereo depth estimation.
 
 === List of components
 
