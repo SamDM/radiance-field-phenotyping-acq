@@ -157,6 +157,10 @@ Some additional notes:
     This is required because the cameras will move around, putting strain on the cables.
   - The cables between the POE switches and mini-PC need to meet the cat6 standard,
     to allow fast enough data transfer. But they won't experience strain.
+  - We should have a sliding rail mounted on the orbital rail, the sliding rail
+    then holds the cameras. Why? Then we can move the cameras inwards/outwards
+    to have the best view of the subject without wasting pixels on background
+    content.
   - We should mount both cameras on a single solid piece of material, such that they don't
     move with respect to each other.
     - This gives extra constrains to the camera geometry solver
@@ -246,7 +250,7 @@ Some additional notes:
     [CWWK N100 fanless mini-PC - 4 x 2.5G RJ45 LAN],
     [1],
     [#sym.euro 328.74],
-    [#link("https://www.amazon.com.be/-/en/Firewall-Appliance-Fanless-Computer-OPNsense/dp/B0DNXQ6GRV")],
+    [#link("https://www.amazon.com.be/-/en/Firewall-Appliance-OPNsense-Computer-Fanless/dp/B0DNXPGR25")],
     //
     [Camera mounting],
     [M3 screws, 4mm deep],
