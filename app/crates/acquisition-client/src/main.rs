@@ -34,12 +34,15 @@ fn main() -> eframe::Result {
     let (cmd_tx, cmd_rx) = tokio_mpsc::unbounded_channel::<ClientMessage>();
 
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Acquisition Client"),
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Phenominator")
+            .with_app_id("phenominator-client")
+            .with_icon(load_icon()),
         ..Default::default()
     };
 
     let result = eframe::run_native(
-        "Acquisition Client",
+        "Phenominator",
         options,
         Box::new(move |cc| {
             // setup forwarding between internal channels and server,
@@ -60,6 +63,18 @@ fn main() -> eframe::Result {
     // keep tokio rt (and therefore websocket forwarding) alive until app closes
     drop(rt);
     result
+}
+
+fn load_icon() -> egui::IconData {
+    let image = image::load_from_memory(include_bytes!("../assets/icon.png"))
+        .expect("embedded icon is a valid image")
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    egui::IconData {
+        rgba: image.into_raw(),
+        width,
+        height,
+    }
 }
 
 async fn start_ws_bridges(
