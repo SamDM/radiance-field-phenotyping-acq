@@ -1,3 +1,59 @@
+# Running the acquisition server on the NUC
+
+```bash
+cargo run --manifest-path app/Cargo.toml -p acquisition-server
+# in case the pylon SDK is installed in a non-standard location,
+# set LD_LIBRARY_PATH explicitly
+LD_LIBRARY_PATH=/opt/pylon/lib cargo run --manifest-path app/Cargo.toml -p acquisition-server
+```
+
+## Logging
+
+Logging is controlled via the `RUST_LOG` environment variable:
+
+```bash
+# info level and above (default if RUST_LOG is unset: no output)
+RUST_LOG=info cargo run --manifest-path app/Cargo.toml -p acquisition-server
+
+# debug adds per-poll PTP status for each camera; span close events show
+# elapsed_milliseconds for Ptp4lGuard::new, wait_for_slave, wait_for_locked
+RUST_LOG=debug cargo run --manifest-path app/Cargo.toml -p acquisition-server
+
+# trace also includes ptp4l stdout and config feature calls
+RUST_LOG=trace cargo run --manifest-path app/Cargo.toml -p acquisition-server
+
+# enable everything except PTP
+RUST_LOG=trace,pylon::ptp=off cargo run --manifest-path app/Cargo.toml -p acquisition-server
+```
+
+## On-camera debayering (not viable)
+
+The a2A3536-9gcBAS has a 1 GigE interface (~125 MB/s). At full resolution
+(3536×2448), an RGB8 frame is ~26 MB, so 9 fps would require ~234 MB/s —
+nearly double the link capacity. Frames arrive incomplete and are dropped
+by Pylon's stream grabber. BayerRG8 works because it is 1 byte/pixel
+(~78 MB/s at 9 fps). **Debayering must be done on the host.**
+
+Lowering the framerate to 2 fps via `AcquisitionFrameRate` does not help either —
+frames are still incompletely grabbed. The bottleneck appears to be burst behaviour
+in the camera or the GigE stream grabber rather than sustained link throughput.
+
+The `--debayer` CLI flag and the associated `PixelFormat`/`DemosaicingMethod`/
+`AcquisitionFrameRate` camera settings exist in the code but cannot be used reliably.
+
+## Auto-tuning camera whitebalance/gain/exposure
+
+Auto-tuning of camera whitebalance, gain and exposure... <br>
+Here, PTP is disabled such that the cameras start up faster,
+but auto-tuning is compatible with PTP syncing.
+
+```bash
+cargo run --manifest-path app/Cargo.toml -p acquisition-server -- --frames 5 --no-ptp --auto-adjust
+
+# with debugging
+RUST_LOG=debug cargo run --manifest-path app/Cargo.toml -p acquisition-server -- --frames 5 --no-ptp --auto-adjust
+```
+
 # NUC to Laptop Direct Ethernet Connection (Point-to-Point)
 
 This guide documents the steps to establish a direct, Point-to-Point (P2P)
@@ -66,6 +122,8 @@ On the laptop running Linux, identify the physical Ethernet port (e.g. enp0s31f6
 Configure a static IP in the `192.168.99.x` subnet before connecting the physical
 cable.
 
+### Temporary (may not work for long if you have networkmanager installed)
+
 ```Bash
 sudo ip addr add 192.168.99.2/24 dev enp0s31f6
 sudo ip link set dev enp0s31f6 up
@@ -81,6 +139,15 @@ samey @ ledono25 :2 > ip a
 ...
 ```
 (Note: NO-CARRIER and state DOWN are expected until the physical connection is made).
+
+### If networkmanager (ubuntu) keeps resetting your network interface:
+
+```bash
+# Create a profile
+sudo nmcli con add type ethernet con-name my-static-link ifname enp0s31f6 ip4 192.168.99.2/24
+# Activate the profile
+sudo nmcli con up my-static-link
+```
 
 ## 4. Connection and Testing
 

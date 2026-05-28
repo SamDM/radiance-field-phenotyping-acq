@@ -1,0 +1,28 @@
+[package]
+name = "acquisition-server"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "acquisition_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "acquisition-server"
+path = "src/main.rs"
+
+[dependencies]
+acquisition-common = { path = "../acquisition-common" }
+pylon = { path = "../pylon" }
+clap = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+postcard = { workspace = true }
+uuid = { workspace = true }
