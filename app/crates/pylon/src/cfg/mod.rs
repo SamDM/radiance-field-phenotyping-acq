@@ -3,7 +3,7 @@ mod config;
 mod ptp;
 
 pub use auto::{
-    begin_auto_adjust, sync_exposure, sync_gain, sync_whitebalance,
+    begin_auto_adjust, sync_exposure, sync_framerate, sync_gain, sync_whitebalance,
     AutoAdjustConfig, AutoAdjustHandle, AutoAdjustTick, AutoFunctionProfile,
     AutoParam, AveragedSettings, Result,
 };

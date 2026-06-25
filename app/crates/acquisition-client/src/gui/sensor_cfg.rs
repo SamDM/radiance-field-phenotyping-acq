@@ -93,6 +93,7 @@ pub(super) struct SensorCfgUiState {
     pub(super) balance_r: SensorCfgFieldState,
     pub(super) balance_g: SensorCfgFieldState,
     pub(super) balance_b: SensorCfgFieldState,
+    pub(super) framerate: SensorCfgFieldState,
 }
 
 impl Default for SensorCfgUiState {
@@ -103,6 +104,7 @@ impl Default for SensorCfgUiState {
             balance_r: SensorCfgFieldState::new(-2),
             balance_g: SensorCfgFieldState::new(-2),
             balance_b: SensorCfgFieldState::new(-2),
+            framerate: SensorCfgFieldState::new(-1),
         }
     }
 }
@@ -122,6 +124,8 @@ impl SensorCfgUiState {
             self.exposure_us
                 .reconcile_from_server(server_ack, server_cfg.exposure_us.map(timed)),
             self.gain.reconcile_from_server(server_ack, server_cfg.gain.map(timed)),
+            self.framerate
+                .reconcile_from_server(server_ack, server_cfg.framerate.map(timed)),
         ];
 
         if let Some((r, g, b)) = server_cfg.white_balance {
@@ -146,6 +150,7 @@ impl SensorCfgUiState {
             .exposure_us
             .reconcile_to_server(cmd_uuid, new_cfg.exposure_us);
         new_cfg.gain = self.gain.reconcile_to_server(cmd_uuid, new_cfg.gain);
+        new_cfg.framerate = self.framerate.reconcile_to_server(cmd_uuid, new_cfg.framerate);
 
         if let Some((r, g, b)) = &mut new_cfg.white_balance {
             let rec = |field: &mut SensorCfgFieldState, val: &mut f64| {
@@ -177,12 +182,21 @@ impl SensorCfgUiState {
         egui::Grid::new("cam_settings_grid")
             .num_columns(2)
             .show(ui, |ui| {
-                sensor_cfg_row(
-                    ui,
-                    "Exposure (µs)",
-                    &mut self.exposure_us.state,
-                    opt_sensor_cfg.and_then(|s| s.exposure_us),
-                );
+                ui.label("Exposure (µs)");
+                ui.horizontal(|ui| {
+                    sensor_cfg_input(
+                        ui,
+                        &mut self.exposure_us.state,
+                        opt_sensor_cfg.and_then(|s| s.exposure_us),
+                    );
+                    ui.label("Framerate (fps)");
+                    sensor_cfg_input(
+                        ui,
+                        &mut self.framerate.state,
+                        opt_sensor_cfg.and_then(|s| s.framerate),
+                    );
+                });
+                ui.end_row();
                 sensor_cfg_row(
                     ui,
                     "Gain",
@@ -228,13 +242,7 @@ impl SensorCfgUiState {
     }
 }
 
-pub(super) fn sensor_cfg_row(
-    ui: &mut egui::Ui,
-    label: &str,
-    field: &mut NumericInputState,
-    server_val: Option<f64>,
-) {
-    ui.label(label);
+fn sensor_cfg_input(ui: &mut egui::Ui, field: &mut NumericInputState, server_val: Option<f64>) {
     let matches_server = server_val.map_or(false, |sv| {
         field
             .value()
@@ -245,5 +253,24 @@ pub(super) fn sensor_cfg_row(
         widget = widget.text_color(egui::Color32::from_rgb(255, 140, 0));
     }
     ui.add(widget);
+}
+
+pub(super) fn sensor_cfg_cells(
+    ui: &mut egui::Ui,
+    label: &str,
+    field: &mut NumericInputState,
+    server_val: Option<f64>,
+) {
+    ui.label(label);
+    sensor_cfg_input(ui, field, server_val);
+}
+
+pub(super) fn sensor_cfg_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    field: &mut NumericInputState,
+    server_val: Option<f64>,
+) {
+    sensor_cfg_cells(ui, label, field, server_val);
     ui.end_row();
 }

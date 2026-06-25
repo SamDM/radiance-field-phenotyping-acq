@@ -9,7 +9,7 @@ try:
          "--",
          "--n-cameras", "2",
          "--frames", "500",
-         "--framerate", "2.0",
+         "--framerate", "3.0",
         #  "--auto-adjust-duration-secs", "30",
         #  "--auto-adjust-minimize-gain",
         #  "--auto-adjust-no-boost-framerate",

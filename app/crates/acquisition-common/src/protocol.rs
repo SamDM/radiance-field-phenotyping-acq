@@ -151,4 +151,5 @@ pub struct SensorCfg {
     pub gain: Option<f64>,
     /// (red, green, blue) balance ratios.
     pub white_balance: Option<(f64, f64, f64)>,
+    pub framerate: Option<f64>,
 }
