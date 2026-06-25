@@ -157,6 +157,22 @@ pub fn sync_whitebalance(cameras: &mut CameraArray) -> Result<(f64, f64, f64)> {
     Ok((avg_r, avg_g, avg_b))
 }
 
+pub fn sync_framerate(cameras: &mut CameraArray) -> Result<f64> {
+    let n = cameras.len();
+    let mut sum = 0.0f64;
+    for i in 0..n {
+        let cam = cameras.get_camera(i);
+        let v = parse_f64(cam.get_feature("AcquisitionFrameRate")?, "AcquisitionFrameRate")?;
+        debug!(camera = i, framerate = v, "framerate reading");
+        sum += v;
+    }
+    let avg = sum / n as f64;
+    for i in 0..n {
+        cameras.get_camera(i).set_feature("AcquisitionFrameRate", &format!("{avg}"))?;
+    }
+    Ok(avg)
+}
+
 /// Handle for an in-progress auto-adjust operation. The caller drives the
 /// process by calling [`AutoAdjustHandle::tick`] after each frame retrieved
 /// from the camera array. When tick returns [`AutoAdjustTick::Converged`],

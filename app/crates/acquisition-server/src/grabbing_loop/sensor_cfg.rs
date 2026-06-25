@@ -53,6 +53,7 @@ impl SensorCfgIterState {
                 } else {
                     prev.white_balance
                 },
+                framerate: prev.framerate,
             },
             SensorCfgActivity::Unitialized
             | SensorCfgActivity::Unknown
@@ -168,12 +169,11 @@ fn handle_commands(
             wire::ClientCommand::StopAutoAdjust => {
                 if let SensorCfgActivity::AutoAdjusting { .. } = &state.cfg_values {
                     let old = std::mem::replace(&mut state.cfg_values, SensorCfgActivity::Unknown);
-                    let SensorCfgActivity::AutoAdjusting { handle, prev } = old else {
+                    let SensorCfgActivity::AutoAdjusting { handle, .. } = old else {
                         unreachable!()
                     };
                     abort_auto_adjust(
                         handle,
-                        prev,
                         camera_array,
                         &mut state.cfg_values,
                         evt_tx,
@@ -208,14 +208,14 @@ fn auto_adjust_tick(
         Ok(pylon::cfg::AutoAdjustTick::Converging) => {}
         Ok(pylon::cfg::AutoAdjustTick::Converged) => {
             let old = std::mem::replace(&mut state.cfg_values, SensorCfgActivity::Unknown);
-            let SensorCfgActivity::AutoAdjusting { handle, prev } = old else {
+            let SensorCfgActivity::AutoAdjusting { handle, .. } = old else {
                 unreachable!()
             };
             match handle.finish(camera_array) {
                 Ok(averaged) => {
-                    let settings = wire_autoadjust_settings(averaged, &prev);
-                    info!(?settings, "auto-adjust converged");
-                    state.cfg_values = SensorCfgActivity::Set(settings);
+                    info!(?averaged, "auto-adjust converged");
+                    // State is already Unknown; handle_unknown_settings will call
+                    // sync_sensor_cfg to read all values (including framerate) back.
                 }
                 Err(e) => {
                     sensor_cfg_failed(
@@ -229,12 +229,11 @@ fn auto_adjust_tick(
         }
         Ok(pylon::cfg::AutoAdjustTick::TimedOut) => {
             let old = std::mem::replace(&mut state.cfg_values, SensorCfgActivity::Unknown);
-            let SensorCfgActivity::AutoAdjusting { handle, prev } = old else {
+            let SensorCfgActivity::AutoAdjusting { handle, .. } = old else {
                 unreachable!()
             };
             abort_auto_adjust(
                 handle,
-                prev,
                 camera_array,
                 &mut state.cfg_values,
                 evt_tx,
@@ -244,12 +243,11 @@ fn auto_adjust_tick(
         }
         Err(e) => {
             let old = std::mem::replace(&mut state.cfg_values, SensorCfgActivity::Unknown);
-            let SensorCfgActivity::AutoAdjusting { handle, prev } = old else {
+            let SensorCfgActivity::AutoAdjusting { handle, .. } = old else {
                 unreachable!()
             };
             abort_auto_adjust(
                 handle,
-                prev,
                 camera_array,
                 &mut state.cfg_values,
                 evt_tx,
@@ -347,7 +345,6 @@ fn start_auto_adjust(
 
 fn abort_auto_adjust(
     handle: pylon::cfg::AutoAdjustHandle,
-    prev: wire::SensorCfg,
     cameras: &mut pylon::CameraArray,
     cfg_values: &mut SensorCfgActivity,
     evt_tx: &broadcast::Sender<wire::ServerMessage>,
@@ -356,8 +353,9 @@ fn abort_auto_adjust(
 ) {
     sensor_cfg_failed(cfg_values, evt_tx, cmd_uuid, reason);
     match handle.finish(cameras) {
-        Ok(averaged) => {
-            *cfg_values = SensorCfgActivity::Set(wire_autoadjust_settings(averaged, &prev))
+        Ok(_) => {
+            // State is already Unknown; handle_unknown_settings will call
+            // sync_sensor_cfg to read all values (including framerate) back.
         }
         Err(e) => sensor_cfg_failed(
             cfg_values,
@@ -372,23 +370,15 @@ fn sync_sensor_cfg(cameras: &mut CameraArray) -> Result<wire::SensorCfg, String>
     let exposure_us = pylon::cfg::sync_exposure(cameras).map_err(|e| e.to_string())?;
     let gain = pylon::cfg::sync_gain(cameras).map_err(|e| e.to_string())?;
     let white_balance = pylon::cfg::sync_whitebalance(cameras).map_err(|e| e.to_string())?;
+    let framerate = pylon::cfg::sync_framerate(cameras).map_err(|e| e.to_string())?;
     Ok(wire::SensorCfg {
         exposure_us: Some(exposure_us),
         gain: Some(gain),
         white_balance: Some(white_balance),
+        framerate: Some(framerate),
     })
 }
 
-fn wire_autoadjust_settings(
-    averaged: pylon::cfg::AveragedSettings,
-    previous: &wire::SensorCfg,
-) -> wire::SensorCfg {
-    wire::SensorCfg {
-        exposure_us: averaged.exposure_time_us.or(previous.exposure_us),
-        gain: averaged.gain.or(previous.gain),
-        white_balance: averaged.white_balance.or(previous.white_balance),
-    }
-}
 
 fn apply_settings(
     cameras: &mut pylon::CameraArray,
@@ -416,6 +406,10 @@ fn apply_settings(
             cam.set_feature("BalanceRatioSelector", "Blue")
                 .map_err(|e| e.to_string())?;
             cam.set_feature("BalanceRatio", &format!("{b}"))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(v) = settings.framerate {
+            pylon::cfg::set_acquisition_framerate(&mut cam, v)
                 .map_err(|e| e.to_string())?;
         }
     }
