@@ -96,7 +96,7 @@ pub(super) fn iteration(
 fn warn_ptp_failed(e: &str, evt_tx: &broadcast::Sender<wire::ServerMessage>) {
     let msg = "PTP initialization failed, continueing without PTP";
     warn!(e, msg);
-    let _ = evt_tx.send(wire::ServerMessage::internal_err(format!("{msg}: {e}")));
+    let _ = evt_tx.send(wire::ServerMessage::notice(wire::NoticeSeverity::Warn, format!("{msg}: {e}")));
 }
 
 fn spawn_ptp4l_guard(camera_array: &CameraArray) -> Result<Ptp4lGuard, Box<dyn std::error::Error>> {

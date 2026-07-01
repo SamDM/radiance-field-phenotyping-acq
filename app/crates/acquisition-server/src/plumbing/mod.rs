@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use acquisition_common::protocol::{ClientMessage, PreviewFrame, ServerMessage};
 use tokio::net::{TcpListener, TcpStream};
@@ -11,6 +12,7 @@ use crate::Args;
 
 mod control;
 mod preview;
+mod ws;
 
 /// This function has a 3 phases:
 /// Phase 1: define channels for internal communication between threads,
@@ -23,6 +25,8 @@ pub async fn start_server(args: Args) -> Result<(), Box<dyn std::error::Error>> 
     let preview_addr = args.preview_addr;  // for later use
     let event_broadcast_capacity = args.event_broadcast_capacity;
     let preview_broadcast_capacity = args.preview_broadcast_capacity;
+    let heartbeat_interval = Duration::from_secs(args.heartbeat_interval_secs);
+    let send_timeout = Duration::from_secs(args.send_timeout_secs);
 
     // -------
     // Phase 1
@@ -78,6 +82,8 @@ pub async fn start_server(args: Args) -> Result<(), Box<dyn std::error::Error>> 
         cmd_tx.clone(),
         evt_bcast.clone(),      // note: `evt_rx` is obtained from `evt_bcast.subscribe()`
         preview_bcast.clone(),  // note: `preview_rx` is obtained from `preview_bcast.subscribe()`
+        heartbeat_interval,
+        send_timeout,
     )
     .await?;
 
@@ -115,6 +121,8 @@ async fn start_ws_bridges(
     cmd_tx: mpsc::UnboundedSender<ClientMessage>,
     evt_bcast: broadcast::Sender<ServerMessage>,
     preview_bcast: broadcast::Sender<Vec<PreviewFrame>>,
+    heartbeat_interval: Duration,
+    send_timeout: Duration,
 ) -> Result<(JoinHandle<()>, JoinHandle<()>), Box<dyn std::error::Error>> {
     let control_listener = TcpListener::bind(control_addr).await?;
     info!(%control_addr, "control socket listening");
@@ -124,12 +132,12 @@ async fn start_ws_bridges(
     let control_accept = spawn_accept_loop("control", control_listener, move |stream| {
         let cmd_tx = cmd_tx.clone();
         let evt_rx = evt_bcast.subscribe();
-        control::handle(stream, cmd_tx, evt_rx)
+        control::handle(stream, cmd_tx, evt_rx, heartbeat_interval, send_timeout)
     });
 
     let preview_accept = spawn_accept_loop("preview", preview_listener, move |stream| {
         let preview_rx = preview_bcast.subscribe();
-        preview::handle(stream, preview_rx)
+        preview::handle(stream, preview_rx, heartbeat_interval, send_timeout)
     });
 
     Ok((control_accept, preview_accept))

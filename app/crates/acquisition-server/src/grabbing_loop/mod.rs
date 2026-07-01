@@ -1,5 +1,6 @@
 use acquisition_common::protocol as wire;
 use pylon::{pylon_init, CameraArray};
+use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -7,7 +8,8 @@ use tracing::{debug, info, warn};
 
 use crate::Args;
 
-mod acquisition;
+mod library;
+mod preview;
 mod ptp;
 mod sensor_cfg;
 
@@ -15,7 +17,7 @@ struct MutableServerState {
     pub camera_array: CameraArray,
     pub ptp_state: ptp::PtpIterState,
     pub sensor_cfg_state: sensor_cfg::SensorCfgIterState,
-    pub acquisition_state: acquisition::AcquisitionIterState,
+    pub preview_state: preview::PreviewIterState,
     pub prev_wire_status: Option<wire::ServerStatus>,
 }
 
@@ -35,7 +37,7 @@ pub fn run(
             args.auto_adjust_minimize_gain,
             args.auto_adjust_no_boost_framerate,
         ),
-        acquisition_state: acquisition::AcquisitionIterState::new(
+        preview_state: preview::PreviewIterState::new(
             args.n_cameras,
             args.grouper_buffer_len,
             args.debayer,
@@ -47,23 +49,18 @@ pub fn run(
 
     info!("ready — awaiting start/stop commands over control channel");
 
-    // Main application loop
-    // Most time should be spent here
     loop {
         match drain_commands(&mut cmd_rx) {
-            // Channel open with messages from client(s): process them, then notify new status
-            // Note that `messages` will be empty most of the time
             Some(messages) => {
                 process_commands(&messages, &mut server_state, &evt_tx, &preview_tx)?;
                 notify_status_change(&messages, &mut server_state, &evt_tx)
             }
-            // Channel closed: this is the happy path shutdown signal
-            None => break, // TODO: broadcast shutdown
+            None => break,
         }
 
         if !server_state.camera_array.is_grabbing() {
             warn!("cameras stopped grabbing unexpectedly");
-            break; // TODO: broadcast application crashed
+            break;
         }
     }
 
@@ -88,16 +85,13 @@ fn start_cameras(args: &Args) -> Result<(CameraArray, impl Drop), Box<dyn std::e
     Ok((camera_array, pylon))
 }
 
-/// Drains all pending commands from the channel.
 fn drain_commands(
     cmd_rx: &mut mpsc::UnboundedReceiver<wire::ClientMessage>,
 ) -> Option<Vec<wire::ClientMessage>> {
     let mut messages = vec![];
     loop {
         match cmd_rx.try_recv() {
-            Ok(message) => {
-                messages.push(message);
-            }
+            Ok(message) => messages.push(message),
             Err(TryRecvError::Empty) => return Some(messages),
             Err(TryRecvError::Disconnected) => {
                 info!("command channel closed, shutting down acquisition loop");
@@ -119,16 +113,16 @@ fn process_commands(
         evt_tx,
     );
     sensor_cfg::iteration(
-        &messages,
+        messages,
         &mut server_state.camera_array,
         &mut server_state.sensor_cfg_state,
-        server_state.acquisition_state.is_recording(),
+        server_state.preview_state.is_recording(),
         evt_tx,
     );
-    acquisition::iteration(
-        &messages,
+    preview::iteration(
+        messages,
         &mut server_state.camera_array,
-        &mut server_state.acquisition_state,
+        &mut server_state.preview_state,
         server_state.sensor_cfg_state.is_auto_adjusting(),
         evt_tx,
         preview_tx,
@@ -141,24 +135,22 @@ fn notify_status_change(
     server_state: &mut MutableServerState,
     evt_tx: &broadcast::Sender<wire::ServerMessage>,
 ) {
-    // Construct new status
     let ptp = server_state.ptp_state.ptp_report().clone();
-    let activity = if server_state.sensor_cfg_state.is_auto_adjusting() {
-        wire::Activity::AutoAdjusting
-    } else if server_state.acquisition_state.is_recording() {
-        wire::Activity::Recording
-    } else {
-        wire::Activity::Idle
-    };
+    let activity = server_state
+        .preview_state
+        .wire_activity(server_state.sensor_cfg_state.is_auto_adjusting());
     let sensor_cfg = server_state.sensor_cfg_state.cfg();
-    let new_status = wire::ServerStatus { activity, ptp, sensor_cfg };
+    let recordings = server_state.preview_state.recordings().to_vec();
+    let new_status = wire::ServerStatus {
+        server_time: OffsetDateTime::now_utc(),
+        activity,
+        ptp,
+        sensor_cfg,
+        recordings,
+        selected_recording: server_state.preview_state.selected_folder().map(str::to_owned),
+    };
 
-    // See if broacast needed
     let status_changed = server_state.prev_wire_status.as_ref() != Some(&new_status);
-    // If any message was sent be a client, we re-emit the status.
-    // This handles cases where the client attempted a status changed that was not possible
-    // (e.g. setting and invalid sensor value)
-    // let get_status_requested = messages.iter().any(|m| matches!(m.command, wire::ClientCommand::GetStatus));
     let get_status_requested = messages.len() > 0;
 
     if status_changed {
