@@ -11,6 +11,8 @@ const DEFAULT_GROUPER_BUFFER_LEN: usize = 10;
 const DEFAULT_PTP_POLL_INTERVAL_SECS: u64 = 1;
 const DEFAULT_EVENT_BROADCAST_CAPACITY: usize = 32;
 const DEFAULT_PREVIEW_BROADCAST_CAPACITY: usize = 2;
+const DEFAULT_HEARTBEAT_INTERVAL_SECS: u64 = 5;
+const DEFAULT_SEND_TIMEOUT_SECS: u64 = 2;
 const DEFAULT_CONTROL_ADDR: &str = "127.0.0.1:8081";
 const DEFAULT_PREVIEW_ADDR: &str = "127.0.0.1:8082";
 const DEFAULT_AUTO_ADJUST_DURATION_SECS: u64 = 30;
@@ -77,6 +79,19 @@ pub struct Args {
     /// Broadcast channel capacity for preview frames
     #[arg(long, default_value_t = DEFAULT_PREVIEW_BROADCAST_CAPACITY)]
     pub preview_broadcast_capacity: usize,
+
+    /// Interval (seconds) between WebSocket heartbeat pings to each client. A
+    /// client that fails to answer with a pong for one full interval is
+    /// considered disconnected. This is what lets the server notice clients that
+    /// vanish without a clean close (e.g. behind an SSH/port-forward tunnel).
+    #[arg(long, default_value_t = DEFAULT_HEARTBEAT_INTERVAL_SECS)]
+    pub heartbeat_interval_secs: u64,
+
+    /// Per-message send timeout (seconds). A send that blocks longer than this
+    /// (wedged socket / frozen peer that stops draining) is treated as a
+    /// disconnect rather than blocking the connection handler indefinitely.
+    #[arg(long, default_value_t = DEFAULT_SEND_TIMEOUT_SECS)]
+    pub send_timeout_secs: u64,
 
     /// Bind address for the control WebSocket (client → server commands).
     #[arg(long, default_value = DEFAULT_CONTROL_ADDR)]

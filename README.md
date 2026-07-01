@@ -26,6 +26,14 @@ RUST_LOG=trace cargo run --manifest-path app/Cargo.toml -p acquisition-server
 RUST_LOG=trace,pylon::ptp=off cargo run --manifest-path app/Cargo.toml -p acquisition-server
 ```
 
+## Build dependencies (server)
+
+The server requires `cmake` and `nasm` to build the bundled libjpeg-turbo (used for JPEG-compressed preview streaming):
+
+```bash
+sudo apt install cmake nasm
+```
+
 ## On-camera debayering (not viable)
 
 The a2A3536-9gcBAS has a 1 GigE interface (~125 MB/s). At full resolution

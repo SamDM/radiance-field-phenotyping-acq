@@ -2,7 +2,7 @@ use image::RgbImage;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::AnyFrame;
+use time::OffsetDateTime;
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -25,6 +25,18 @@ pub enum ClientCommand {
     StopAutoAdjust,
     StartRecording,
     StopRecording,
+    StartReplay { folder: String },
+    StopReplay,
+    PauseReplay,
+    ResumeReplay,
+    RewindReplay,
+    StepReplayForward,
+    StepReplayBackward,
+    SeekReplayToFrame { frame_idx: u32 },
+    TrashRecording { folder: String },
+    RateRecording { folder: String, rating: u8 },
+    CommentRecording { folder: String, comment: String },
+    SelectRecording { folder: String },
     /// Request (or, with `position: None`, clear) a full-resolution zoom crop for a camera.
     /// `position` is the crosshair location in normalized [0,1] image coordinates.
     SetZoom {
@@ -33,11 +45,18 @@ pub enum ClientCommand {
     },
 }
 
-/// A single preview entry sent over the preview stream: the (downscaled) preview frame
-/// plus, when a zoom is active for that camera, an unscaled full-resolution color crop.
+/// A single preview entry sent over the preview stream: the (downscaled) JPEG-compressed
+/// preview frame plus, when a zoom is active for that camera, an unscaled full-resolution
+/// color crop (uncompressed, to preserve exact pixel data for sharpness estimation).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PreviewFrame {
-    pub frame: AnyFrame,
+    pub jpeg: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub camera_name: String,
+    pub camera_timestamp_ns: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub host_timestamp: OffsetDateTime,
     pub zoom: Option<Zoom>,
 }
 
@@ -74,10 +93,46 @@ pub struct ServerAck {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct PastRecording {
+    pub folder: String,
+    pub name: String,
+    pub ok: bool,
+    pub elapsed: time::Duration,
+    pub groups_saved: u32,
+    #[serde(default)]
+    pub finished_at: Option<time::OffsetDateTime>,
+    #[serde(default)]
+    pub rating: Option<u8>,
+    #[serde(default)]
+    pub comment: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ServerStatus {
+    #[serde(with = "time::serde::rfc3339")]
+    pub server_time: OffsetDateTime,
     pub activity: Activity,
     pub ptp: PtpStatusReport,
     pub sensor_cfg: SensorCfg,
+    #[serde(default)]
+    pub recordings: Vec<PastRecording>,
+    #[serde(default)]
+    pub selected_recording: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeSeverity {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Notice {
+    pub severity: NoticeSeverity,
+    pub message: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub at: OffsetDateTime,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -85,7 +140,7 @@ pub struct ServerStatus {
 pub enum ServerMessage {
     ServerStatus(ServerStatus),
     Ack(ServerAck),
-    InternalErr(String),
+    Notice(Notice),
 }
 
 impl ServerMessage {
@@ -97,15 +152,34 @@ impl ServerMessage {
         ServerMessage::Ack(ServerAck { cmd_uuid, result: Err(reason) })
     }
 
-    pub fn internal_err(reason: String) -> ServerMessage {
-        ServerMessage::InternalErr(reason)
+    pub fn notice(severity: NoticeSeverity, message: String) -> ServerMessage {
+        ServerMessage::Notice(Notice { severity, message, at: OffsetDateTime::now_utc() })
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum Activity {
     Idle,
-    Recording,
+    Recording {
+        elapsed: time::Duration,
+        groups_saved: u32,
+        folder: String,
+        name: String,
+    },
+    Replaying {
+        folder: String,
+        name: String,
+        frame_idx: u32,
+        total_frames: u32,
+        /// Camera-timestamp offset of the current frame from the recording start (nanoseconds).
+        #[serde(default)]
+        elapsed_ns: u64,
+        /// Camera-timestamp span of the full recording (nanoseconds).
+        #[serde(default)]
+        total_ns: u64,
+        #[serde(default)]
+        paused: bool,
+    },
     AutoAdjusting,
 }
 

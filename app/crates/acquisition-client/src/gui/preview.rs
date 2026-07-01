@@ -7,12 +7,17 @@ use eframe::egui::accesskit::Uuid;
 use time::OffsetDateTime;
 use tokio::sync::mpsc as tokio_mpsc;
 
+use super::Timed;
+
 pub(super) struct FramePreviewState {
     preview_last_seen: HashMap<String, OffsetDateTime>,
     preview_pending_frames: HashMap<String, Frame<Color>>,
     textures: HashMap<String, egui::TextureHandle>,
-    crosshairs: HashMap<String, egui::Vec2>,
-    zoom_pending: HashMap<String, Zoom>,
+    /// Orange crosshair position, shown while a zoom request is pending ACK.
+    /// `None` position means a pending *clear* (no crosshair to draw).
+    pending_crosshairs: HashMap<String, (Uuid, Option<egui::Vec2>)>,
+    /// Server-authoritative zoom state, updated unconditionally from preview frames.
+    server_zoom: HashMap<String, Zoom>,
     zoom_textures: HashMap<String, egui::TextureHandle>,
 }
 
@@ -22,8 +27,8 @@ impl Default for FramePreviewState {
             preview_last_seen: HashMap::new(),
             preview_pending_frames: HashMap::new(),
             textures: HashMap::new(),
-            crosshairs: HashMap::new(),
-            zoom_pending: HashMap::new(),
+            pending_crosshairs: HashMap::new(),
+            server_zoom: HashMap::new(),
             zoom_textures: HashMap::new(),
         }
     }
@@ -37,10 +42,10 @@ impl FramePreviewState {
                 .insert(name.clone(), frame.camera_datetime_local());
             match zoom {
                 Some(z) => {
-                    self.zoom_pending.insert(name.clone(), z);
+                    self.server_zoom.insert(name.clone(), z);
                 }
                 None => {
-                    self.zoom_pending.remove(&name);
+                    self.server_zoom.remove(&name);
                     self.zoom_textures.remove(&name);
                 }
             }
@@ -48,18 +53,23 @@ impl FramePreviewState {
         }
     }
 
-    pub(super) fn show(
+    fn reconcile_from_server(
         &mut self,
-        ui: &mut egui::Ui,
-        cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
+        server_ack: &mut HashMap<Uuid, Timed<Result<(), String>>>,
     ) {
+        self.pending_crosshairs.retain(|_cam, (cmd_uuid, _pos)| {
+            server_ack.remove(cmd_uuid).is_none()
+        });
+    }
+
+    fn upload_textures(&mut self, ctx: &egui::Context) {
         for (cam_name, frame) in self.preview_pending_frames.drain() {
             let img = frame.image();
             let color_image = egui::ColorImage::from_rgb(
                 [img.width() as usize, img.height() as usize],
                 img.as_raw(),
             );
-            let handle = ui.ctx().load_texture(
+            let handle = ctx.load_texture(
                 format!("camera-{cam_name}"),
                 color_image,
                 Default::default(),
@@ -67,19 +77,34 @@ impl FramePreviewState {
             self.textures.insert(cam_name, handle);
         }
 
-        for (cam_name, zoom) in self.zoom_pending.drain() {
+        let mut stale_zoom_keys: Vec<String> = self.zoom_textures.keys().cloned().collect();
+        for (cam_name, zoom) in &self.server_zoom {
+            stale_zoom_keys.retain(|k| k != cam_name);
             let img = &zoom.crop;
             let color_image = egui::ColorImage::from_rgb(
                 [img.width() as usize, img.height() as usize],
                 img.as_raw(),
             );
-            let handle = ui.ctx().load_texture(
+            let handle = ctx.load_texture(
                 format!("zoom-{cam_name}"),
                 color_image,
                 egui::TextureOptions::NEAREST,
             );
-            self.zoom_textures.insert(cam_name, handle);
+            self.zoom_textures.insert(cam_name.clone(), handle);
         }
+        for key in stale_zoom_keys {
+            self.zoom_textures.remove(&key);
+        }
+    }
+
+    pub(super) fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        server_ack: &mut HashMap<Uuid, Timed<Result<(), String>>>,
+        cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
+    ) {
+        self.reconcile_from_server(server_ack);
+        self.upload_textures(ui.ctx());
 
         if self.textures.is_empty() {
             ui.centered_and_justified(|ui| {
@@ -95,7 +120,14 @@ impl FramePreviewState {
                 })
                 .collect();
             entries.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
-            draw_camera_previews(ui, &entries, &mut self.crosshairs, &mut self.zoom_textures, cmd_tx);
+            draw_camera_previews(
+                ui,
+                &entries,
+                &mut self.pending_crosshairs,
+                &self.server_zoom,
+                &self.zoom_textures,
+                cmd_tx,
+            );
         }
     }
 }
@@ -104,14 +136,16 @@ fn send_set_zoom(
     cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
     camera_name: &str,
     position: Option<(f32, f32)>,
-) {
+) -> Uuid {
+    let uuid = Uuid::new_v4();
     let _ = cmd_tx.send(ClientMessage {
-        uuid: Uuid::new_v4(),
+        uuid,
         command: ClientCommand::SetZoom {
             camera_name: camera_name.to_string(),
             position,
         },
     });
+    uuid
 }
 
 fn format_camera_timestamp(timestamp: &OffsetDateTime) -> String {
@@ -132,11 +166,71 @@ fn format_camera_timestamp(timestamp: &OffsetDateTime) -> String {
     }
 }
 
+fn draw_crosshairs(painter: &egui::Painter, rect: egui::Rect, rel: egui::Vec2, color: egui::Color32) {
+    let x = rect.min.x + rel.x * rect.width();
+    let y = rect.min.y + rel.y * rect.height();
+    let stroke = egui::Stroke::new(1.0, color);
+    painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], stroke);
+    painter.line_segment([egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)], stroke);
+}
+
+fn draw_zoom_inset(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    rel: egui::Vec2,
+    zoom_tex: &egui::TextureHandle,
+) {
+    let side = rect.width().min(rect.height()) / 3.0;
+    let margin = 4.0;
+    let min_x = if rel.x < 0.5 {
+        rect.max.x - side - margin
+    } else {
+        rect.min.x + margin
+    };
+    let min_y = if rel.y < 0.5 {
+        rect.max.y - side - margin
+    } else {
+        rect.min.y + margin
+    };
+    let inset_rect = egui::Rect::from_min_size(egui::pos2(min_x, min_y), egui::vec2(side, side));
+    painter.image(
+        zoom_tex.id(),
+        inset_rect,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        egui::Color32::WHITE,
+    );
+    painter.rect_stroke(
+        inset_rect,
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(1.0, egui::Color32::RED),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn handle_zoom_clicks(
+    response: &egui::Response,
+    cam_name: &str,
+    pending_crosshairs: &mut HashMap<String, (Uuid, Option<egui::Vec2>)>,
+    cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
+) {
+    if response.double_clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let rel = (pos - response.rect.min) / response.rect.size();
+            let uuid = send_set_zoom(cmd_tx, cam_name, Some((rel.x, rel.y)));
+            pending_crosshairs.insert(cam_name.to_string(), (uuid, Some(rel)));
+        }
+    } else if response.clicked() {
+        let uuid = send_set_zoom(cmd_tx, cam_name, None);
+        pending_crosshairs.insert(cam_name.to_string(), (uuid, None));
+    }
+}
+
 fn draw_camera_previews(
     ui: &mut egui::Ui,
     cameras: &[(&str, Option<OffsetDateTime>, &egui::TextureHandle)],
-    crosshairs: &mut HashMap<String, egui::Vec2>,
-    zoom_textures: &mut HashMap<String, egui::TextureHandle>,
+    pending_crosshairs: &mut HashMap<String, (Uuid, Option<egui::Vec2>)>,
+    server_zoom: &HashMap<String, Zoom>,
+    zoom_textures: &HashMap<String, egui::TextureHandle>,
     cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
 ) {
     let mono_font_id = egui::TextStyle::Monospace.resolve(ui.style());
@@ -164,17 +258,16 @@ fn draw_camera_previews(
 
         for (cam_name, timestamp, handle) in cameras {
             ui.vertical(|ui| {
-                // ui.horizontal prevents the text from wrapping within the column.
                 ui.horizontal(|ui| {
                     ui.monospace(*cam_name);
                 });
                 if let Some(timestamp) = timestamp {
                     let text = format_camera_timestamp(timestamp);
-                    // ui.horizontal prevents the text from wrapping within the column.
                     ui.horizontal(|ui| {
                         ui.monospace(text);
                     });
                 }
+
                 let native = egui::vec2(handle.size()[0] as f32, handle.size()[1] as f32);
                 let scale_w = per_camera_width / native.x;
                 let scale_h = if image_avail_h > 0.0 {
@@ -182,62 +275,27 @@ fn draw_camera_previews(
                 } else {
                     scale_w
                 };
-                let scale = scale_w.min(scale_h);
-                let image_size = native * scale;
+                let image_size = native * scale_w.min(scale_h);
                 let response = ui.add(
                     egui::Image::new((handle.id(), image_size))
                         .sense(egui::Sense::click()),
                 );
-                if response.double_clicked() {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let rel = (pos - response.rect.min) / response.rect.size();
-                        crosshairs.insert(cam_name.to_string(), rel);
-                        send_set_zoom(cmd_tx, cam_name, Some((rel.x, rel.y)));
-                    }
-                } else if response.clicked() {
-                    crosshairs.remove(*cam_name);
-                    zoom_textures.remove(*cam_name);
-                    send_set_zoom(cmd_tx, cam_name, None);
-                }
-                if let Some(&rel) = crosshairs.get(*cam_name) {
-                    let rect = response.rect;
-                    let x = rect.min.x + rel.x * rect.width();
-                    let y = rect.min.y + rel.y * rect.height();
-                    let stroke = egui::Stroke::new(1.0, egui::Color32::RED);
-                    let painter = ui.painter();
-                    painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], stroke);
-                    painter.line_segment([egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)], stroke);
 
+                handle_zoom_clicks(&response, cam_name, pending_crosshairs, cmd_tx);
+
+                let rect = response.rect;
+                let painter = ui.painter();
+
+                if let Some(zoom) = server_zoom.get(*cam_name) {
+                    let rel = egui::vec2(zoom.rel_x, zoom.rel_y);
+                    draw_crosshairs(painter, rect, rel, egui::Color32::RED);
                     if let Some(zoom_tex) = zoom_textures.get(*cam_name) {
-                        let side = rect.width().min(rect.height()) / 3.0;
-                        let margin = 4.0;
-                        // Place the inset in the corner furthest from the crosshair so it
-                        // never overlaps the crosshair lines.
-                        let min_x = if rel.x < 0.5 {
-                            rect.max.x - side - margin
-                        } else {
-                            rect.min.x + margin
-                        };
-                        let min_y = if rel.y < 0.5 {
-                            rect.max.y - side - margin
-                        } else {
-                            rect.min.y + margin
-                        };
-                        let inset_rect =
-                            egui::Rect::from_min_size(egui::pos2(min_x, min_y), egui::vec2(side, side));
-                        painter.image(
-                            zoom_tex.id(),
-                            inset_rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                        painter.rect_stroke(
-                            inset_rect,
-                            egui::CornerRadius::ZERO,
-                            egui::Stroke::new(1.0, egui::Color32::WHITE),
-                            egui::StrokeKind::Inside,
-                        );
+                        draw_zoom_inset(painter, rect, rel, zoom_tex);
                     }
+                }
+
+                if let Some((_uuid, Some(rel))) = pending_crosshairs.get(*cam_name) {
+                    draw_crosshairs(painter, rect, *rel, egui::Color32::from_rgb(255, 140, 0));
                 }
             });
         }

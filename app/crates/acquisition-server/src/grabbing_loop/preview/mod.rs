@@ -1,0 +1,286 @@
+use std::collections::HashMap;
+
+use acquisition_common::protocol as wire;
+use pylon::CameraArray;
+use tokio::sync::broadcast;
+use tracing::{info, warn};
+
+mod recordings;
+mod replay;
+
+pub(super) struct PreviewIterState {
+    recordings: recordings::RecordingsIterState,
+    replay: Option<replay::ReplayIterState>,
+    zoom_requests: HashMap<String, (f32, f32)>,
+    selected_folder: Option<String>,
+}
+
+impl PreviewIterState {
+    pub(super) fn new(
+        n_cameras: usize,
+        grouper_buffer_len: usize,
+        debayer: bool,
+        output_path_template: String,
+        max_n_frames: u32,
+    ) -> Self {
+        PreviewIterState {
+            recordings: recordings::RecordingsIterState::new(
+                n_cameras,
+                grouper_buffer_len,
+                debayer,
+                output_path_template,
+                max_n_frames,
+            ),
+            replay: None,
+            zoom_requests: HashMap::new(),
+            selected_folder: None,
+        }
+    }
+
+    pub(super) fn is_recording(&self) -> bool {
+        self.recordings.is_recording()
+    }
+
+    pub(super) fn recordings(&self) -> &[wire::PastRecording] {
+        self.recordings.past_recordings()
+    }
+
+    pub(super) fn selected_folder(&self) -> Option<&str> {
+        self.selected_folder.as_deref()
+    }
+
+    /// Returns the current activity, accounting for replay, auto-adjusting, and live states.
+    pub(super) fn wire_activity(&self, auto_adjusting: bool) -> wire::Activity {
+        if let Some(ref rs) = self.replay {
+            rs.wire_activity()
+        } else if auto_adjusting {
+            wire::Activity::AutoAdjusting
+        } else {
+            self.recordings.wire_activity()
+        }
+    }
+}
+
+/// Process one preview iteration: handle mode/zoom commands, drain camera, emit previews.
+pub(super) fn iteration(
+    messages: &[wire::ClientMessage],
+    camera_array: &mut CameraArray,
+    state: &mut PreviewIterState,
+    is_busy: bool,
+    evt_tx: &broadcast::Sender<wire::ServerMessage>,
+    preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for message in messages {
+        match &message.command {
+            wire::ClientCommand::SetZoom { camera_name, position } => {
+                match position {
+                    Some(pos) => {
+                        state.zoom_requests.insert(camera_name.clone(), *pos);
+                        info!("zoom set");
+                    }
+                    None => {
+                        state.zoom_requests.remove(camera_name);
+                        info!("zoom cleared");
+                    }
+                }
+                // While paused, replay won't emit frames on its own — re-emit the current
+                // frame immediately so the zoom crop updates without unpausing.
+                if let Some(ref rs) = state.replay {
+                    if rs.is_paused() {
+                        let paths = rs.current_frame_paths().to_vec();
+                        replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    }
+                }
+                let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+            }
+            wire::ClientCommand::SelectRecording { folder } => {
+                state.selected_folder = Some(folder.clone());
+                let already_replaying_this = state.replay.as_ref()
+                    .map_or(false, |rs| rs.folder() == folder);
+                if state.replay.is_some() && !already_replaying_this {
+                    let was_paused = state.replay.as_ref().map_or(false, |rs| rs.is_paused());
+                    let name = state
+                        .recordings
+                        .past_recordings()
+                        .iter()
+                        .find(|r| &r.folder == folder)
+                        .map(|r| r.name.clone())
+                        .unwrap_or_else(|| folder.clone());
+                    match replay::ReplayIterState::new(folder, &name) {
+                        Ok(mut rs) => {
+                            if was_paused {
+                                rs.pause();
+                                let paths = rs.current_frame_paths().to_vec();
+                                replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                            }
+                            state.replay = Some(rs);
+                            info!(folder, "replay restarted for new selection");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "replay restart failed, stopping replay");
+                            state.replay = None;
+                        }
+                    }
+                }
+                let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+            }
+            wire::ClientCommand::StartReplay { folder } => {
+                if state.recordings.is_recording() {
+                    warn!("replay start rejected: recording in progress");
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(
+                        message.uuid,
+                        "cannot start replay while recording".to_string(),
+                    ));
+                    continue;
+                }
+                let name = state
+                    .recordings
+                    .past_recordings()
+                    .iter()
+                    .find(|r| &r.folder == folder)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| folder.clone());
+                match replay::ReplayIterState::new(folder, &name) {
+                    Ok(rs) => {
+                        state.replay = Some(rs);
+                        info!(folder, "replay started");
+                        let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "replay start failed");
+                        let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, e));
+                    }
+                }
+            }
+            wire::ClientCommand::StopReplay => {
+                state.replay = None;
+                info!("replay stopped");
+                let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+            }
+            wire::ClientCommand::PauseReplay => {
+                if let Some(ref mut rs) = state.replay {
+                    rs.pause();
+                    let paths = rs.current_frame_paths().to_vec();
+                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                } else {
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
+                }
+            }
+            wire::ClientCommand::ResumeReplay => {
+                if let Some(ref mut rs) = state.replay {
+                    rs.resume();
+                    let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                } else {
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
+                }
+            }
+            wire::ClientCommand::RewindReplay => {
+                if let Some(ref mut rs) = state.replay {
+                    rs.rewind();
+                    let paths = rs.current_frame_paths().to_vec();
+                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                } else {
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
+                }
+            }
+            wire::ClientCommand::StepReplayForward => {
+                if let Some(ref mut rs) = state.replay {
+                    let paths = rs.step_forward().to_vec();
+                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                } else {
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
+                }
+            }
+            wire::ClientCommand::StepReplayBackward => {
+                if let Some(ref mut rs) = state.replay {
+                    let paths = rs.step_backward().to_vec();
+                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                } else {
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
+                }
+            }
+            wire::ClientCommand::SeekReplayToFrame { frame_idx } => {
+                if let Some(ref mut rs) = state.replay {
+                    let paths = rs.seek_to_frame(*frame_idx).to_vec();
+                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                } else {
+                    let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
+                }
+            }
+            wire::ClientCommand::GetStatus => {
+                // A freshly connected client sends GetStatus on connect. If we're paused,
+                // the preview_tx won't emit another frame on its own — re-emit the current
+                // frame so the new subscriber gets an image immediately.
+                if let Some(ref rs) = state.replay {
+                    if rs.is_paused() {
+                        let paths = rs.current_frame_paths().to_vec();
+                        replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    }
+                }
+            }
+            wire::ClientCommand::StartRecording => {
+                // Recording always wins: stop any active replay immediately.
+                if state.replay.take().is_some() {
+                    info!("replay stopped: recording started");
+                }
+                // StartRecording is then handled by recordings::iteration below.
+            }
+            _ => {}
+        }
+    }
+
+    let in_replay = state.replay.is_some();
+
+    // Snapshot folder order before iteration so we can find the adjacent selection if a
+    // recording is trashed (the library removes it before we can query its former index).
+    let pre_folders: Vec<String> = state
+        .recordings
+        .past_recordings()
+        .iter()
+        .map(|r| r.folder.clone())
+        .collect();
+
+    // Always drain the camera frame buffer, even during replay, to prevent
+    // Pylon SDK buffer buildup that would add latency when live view resumes.
+    recordings::iteration(
+        messages,
+        camera_array,
+        &mut state.recordings,
+        is_busy,
+        in_replay,
+        &state.zoom_requests,
+        evt_tx,
+        preview_tx,
+    )?;
+
+    // If the selected folder was trashed, advance to the nearest remaining neighbor.
+    if let Some(ref sel) = state.selected_folder.clone() {
+        let still_exists = state.recordings.past_recordings().iter().any(|r| &r.folder == sel);
+        if !still_exists {
+            let candidate = pre_folders.iter().position(|f| f == sel).and_then(|i| {
+                // Prefer the previous recording; fall back to what is now at the same index.
+                let prev = i.checked_sub(1).and_then(|j| pre_folders.get(j));
+                let next = pre_folders.get(i + 1);
+                (prev.or(next)).and_then(|folder| {
+                    if state.recordings.past_recordings().iter().any(|r| &r.folder == folder) {
+                        Some(folder.clone())
+                    } else {
+                        None
+                    }
+                })
+            });
+            state.selected_folder = candidate;
+        }
+    }
+
+    if let Some(ref mut rs) = state.replay {
+        replay::iteration(rs, &state.zoom_requests, preview_tx);
+    }
+
+    Ok(())
+}

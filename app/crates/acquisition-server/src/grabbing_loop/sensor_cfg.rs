@@ -92,7 +92,7 @@ fn sensor_cfg_rejected(
     if let Some(cmd_uuid) = cmd_uuid {
         let _ = evt_tx.send(wire::ServerMessage::ack_err(cmd_uuid, reason));
     } else {
-        let _ = evt_tx.send(wire::ServerMessage::internal_err(reason));
+        let _ = evt_tx.send(wire::ServerMessage::notice(wire::NoticeSeverity::Error, reason));
     }
 }
 
@@ -270,7 +270,7 @@ fn handle_unknown_settings(
         Ok(s) => state.cfg_values = SensorCfgActivity::Set(s),
         Err(e) => {
             warn!("{e}");
-            let _ = evt_tx.send(wire::ServerMessage::internal_err(e.clone()));
+            let _ = evt_tx.send(wire::ServerMessage::notice(wire::NoticeSeverity::Error, e.clone()));
             state.cfg_values = SensorCfgActivity::RestoreFailed;
         }
     }
