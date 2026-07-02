@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use acquisition_common::AnyFrame;
@@ -7,8 +7,9 @@ use acquisition_common::protocol as wire;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
+use super::super::naming::parse_frame_filename;
+
 pub(super) struct ReplayIterState {
-    folder: String,
     name: String,
     /// Frame groups sorted by frame_idx: (frame_idx, per-camera paths).
     frame_groups: Vec<(u32, Vec<PathBuf>)>,
@@ -26,39 +27,31 @@ pub(super) struct ReplayIterState {
 }
 
 impl ReplayIterState {
-    /// Scan `folder` for frame files and build playback state.
-    /// Returns `Err` if no frames are found.
-    pub(super) fn new(folder: &str, name: &str) -> Result<Self, String> {
-        let dir = std::fs::read_dir(folder)
-            .map_err(|e| format!("cannot read folder '{folder}': {e}"))?;
+    /// Scan `path` (a recording directory resolved by the caller via the recording
+    /// library — never a raw client-supplied string) for frame files and build
+    /// playback state. Returns `Err` if no frames are found.
+    pub(super) fn new(path: &Path, name: &str) -> Result<Self, String> {
+        let dir = std::fs::read_dir(path)
+            .map_err(|e| format!("cannot read folder '{}': {e}", path.display()))?;
 
         let mut entries: Vec<(usize, u32, PathBuf)> = Vec::new();
         for entry in dir.flatten() {
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let entry_path = entry.path();
+            let ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if ext != "png" && ext != "tiff" && ext != "tif" {
                 continue;
             }
-            let stem = match path.file_stem().and_then(|s| s.to_str()) {
+            let stem = match entry_path.file_stem().and_then(|s| s.to_str()) {
                 Some(s) => s.to_owned(),
                 None => continue,
             };
-            // Expected stem format: cam-{cam_idx}_frame-{frame_idx:05d}
-            if let Some((cam_part, frame_part)) = stem.split_once('_') {
-                let cam_idx = cam_part
-                    .strip_prefix("cam-")
-                    .and_then(|s| s.parse::<usize>().ok());
-                let frame_idx = frame_part
-                    .strip_prefix("frame-")
-                    .and_then(|s| s.parse::<u32>().ok());
-                if let (Some(c), Some(f)) = (cam_idx, frame_idx) {
-                    entries.push((c, f, path));
-                }
+            if let Some((cam_idx, frame_idx)) = parse_frame_filename(&stem) {
+                entries.push((cam_idx, frame_idx, entry_path));
             }
         }
 
         if entries.is_empty() {
-            return Err(format!("no frames found in '{folder}'"));
+            return Err(format!("no frames found in '{}'", path.display()));
         }
 
         let mut by_frame: std::collections::BTreeMap<u32, Vec<(usize, PathBuf)>> =
@@ -87,13 +80,12 @@ impl ReplayIterState {
         let last_idx = frame_groups.len() - 1;
 
         info!(
-            folder,
+            path = %path.display(),
             total_groups = frame_groups.len(),
             "replay loaded"
         );
 
         Ok(ReplayIterState {
-            folder: folder.to_owned(),
             name: name.to_owned(),
             frame_groups,
             group_timestamps_ns,
@@ -132,8 +124,8 @@ impl ReplayIterState {
         }
     }
 
-    pub(super) fn folder(&self) -> &str {
-        &self.folder
+    pub(super) fn name(&self) -> &str {
+        &self.name
     }
 
     pub(super) fn is_paused(&self) -> bool {
@@ -199,7 +191,6 @@ impl ReplayIterState {
             .unwrap_or(self.first_ts_ns)
             .saturating_sub(self.first_ts_ns);
         wire::Activity::Replaying {
-            folder: self.folder.clone(),
             name: self.name.clone(),
             frame_idx,
             total_frames: self.frame_groups.len() as u32,

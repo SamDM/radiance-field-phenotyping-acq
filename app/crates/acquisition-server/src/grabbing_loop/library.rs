@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use acquisition_common;
 use acquisition_common::protocol as wire;
@@ -26,7 +26,7 @@ pub(super) fn read_metadata(folder: &Path) -> Option<RecordingMetadata> {
     serde_json::from_str(&data).ok()
 }
 
-pub(super) fn write_metadata(folder: &str, lr: &wire::PastRecording) {
+pub(super) fn write_metadata(folder: &Path, lr: &RecordingEntry) {
     let meta = RecordingMetadata {
         ok: lr.ok,
         rating: lr.rating,
@@ -35,7 +35,7 @@ pub(super) fn write_metadata(folder: &str, lr: &wire::PastRecording) {
         groups_saved: Some(lr.groups_saved),
         finished_at: lr.finished_at,
     };
-    let path = Path::new(folder).join("metadata.json");
+    let path = folder.join("metadata.json");
     match serde_json::to_string_pretty(&meta) {
         Ok(json) => {
             if let Err(e) = std::fs::write(&path, json) {
@@ -46,37 +46,75 @@ pub(super) fn write_metadata(folder: &str, lr: &wire::PastRecording) {
     }
 }
 
+/// A recording as known to the server, with its real on-disk path. The path is only
+/// ever populated by the server's own directory scan or its own `finish_recording`
+/// logic — it is never reconstructed from a client-supplied string. Client commands
+/// address recordings by `name` (see `RecordingLibrary::find_by_name`), and the
+/// resolved `path` here is the single point where that name becomes a filesystem path.
+pub(super) struct RecordingEntry {
+    pub path: PathBuf,
+    pub name: String,
+    pub ok: bool,
+    pub elapsed: time::Duration,
+    pub groups_saved: u32,
+    pub finished_at: Option<OffsetDateTime>,
+    pub rating: Option<u8>,
+    pub comment: Option<String>,
+}
+
+impl RecordingEntry {
+    fn to_wire(&self) -> wire::PastRecording {
+        wire::PastRecording {
+            name: self.name.clone(),
+            ok: self.ok,
+            elapsed: self.elapsed,
+            groups_saved: self.groups_saved,
+            finished_at: self.finished_at,
+            rating: self.rating,
+            comment: self.comment.clone(),
+        }
+    }
+}
+
 pub(super) struct RecordingLibrary {
-    recordings: Vec<wire::PastRecording>,
+    recordings: Vec<RecordingEntry>,
 }
 
 impl RecordingLibrary {
-    pub fn new(output_path_template: &str) -> Self {
-        let recordings = scan_all_recordings(output_path_template);
+    pub fn new(output_dir_template: &str) -> Self {
+        let recordings = scan_all_recordings(output_dir_template);
         info!(count = recordings.len(), "recording library loaded");
         RecordingLibrary { recordings }
     }
 
-    pub fn recordings(&self) -> &[wire::PastRecording] {
-        &self.recordings
+    pub fn wire_recordings(&self) -> Vec<wire::PastRecording> {
+        self.recordings.iter().map(RecordingEntry::to_wire).collect()
     }
 
-    pub fn push(&mut self, lr: wire::PastRecording) {
+    pub fn push(&mut self, lr: RecordingEntry) {
         self.recordings.insert(0, lr);
     }
 
-    pub fn find_mut(&mut self, folder: &str) -> Option<&mut wire::PastRecording> {
-        self.recordings.iter_mut().find(|r| r.folder == folder)
+    /// The single, centralized, trusted resolution point: client commands identify a
+    /// recording by `name`; this looks it up against recordings the server itself
+    /// discovered (via scan or its own recording lifecycle), never against a
+    /// client-supplied path.
+    pub fn find_by_name(&self, name: &str) -> Option<&RecordingEntry> {
+        self.recordings.iter().find(|r| r.name == name)
     }
 
-    pub fn remove(&mut self, folder: &str) {
-        self.recordings.retain(|r| r.folder != folder);
+    pub fn find_by_name_mut(&mut self, name: &str) -> Option<&mut RecordingEntry> {
+        self.recordings.iter_mut().find(|r| r.name == name)
+    }
+
+    pub fn remove(&mut self, name: &str) {
+        self.recordings.retain(|r| r.name != name);
     }
 }
 
-pub(super) fn base_dir_from_template(template: &str) -> String {
+pub(super) fn base_dir_from_template(dir_template: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let expanded = template.replace("$HOME", &home);
+    let expanded = dir_template.replace("$HOME", &home);
     let base = match expanded.find('{') {
         Some(i) => &expanded[..i],
         None => &expanded,
@@ -84,61 +122,63 @@ pub(super) fn base_dir_from_template(template: &str) -> String {
     base.trim_end_matches('/').to_string()
 }
 
-fn scan_all_recordings(output_path_template: &str) -> Vec<wire::PastRecording> {
-    let base_dir = base_dir_from_template(output_path_template);
+/// Recursively walk `base_dir` for recording folders (any directory containing a
+/// `metadata.json`), so the scan stays correct regardless of how many directory
+/// levels `--output-dir` produces. A recording folder is treated as a leaf — the
+/// walk does not descend into it. Recursion depth is capped defensively.
+const MAX_SCAN_DEPTH: u32 = 8;
+
+fn scan_all_recordings(output_dir_template: &str) -> Vec<RecordingEntry> {
+    let base_dir = base_dir_from_template(output_dir_template);
     let base = Path::new(&base_dir);
     if !base.is_dir() {
         return Vec::new();
     }
 
-    let sorted_dirs = |dir: &Path| -> Vec<std::ffi::OsString> {
-        let mut entries: Vec<_> = std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().ok().is_some_and(|t| t.is_dir()))
-            .map(|e| e.file_name())
-            .collect();
-        entries.sort();
-        entries
-    };
-
     let mut recordings = Vec::new();
+    walk_for_recordings(base, &base_dir, MAX_SCAN_DEPTH, &mut recordings);
 
-    for date_dir in sorted_dirs(base) {
-        let date_path = base.join(&date_dir);
-        for time_dir in sorted_dirs(&date_path) {
-            let folder = date_path.join(&time_dir);
-            if let Some(meta) = read_metadata(&folder) {
-                let elapsed_seconds = match meta.elapsed_seconds {
-                    Some(s) => s,
-                    None => continue,
-                };
-                let groups_saved = match meta.groups_saved {
-                    Some(g) => g,
-                    None => continue,
-                };
-                let finished_at = match meta.finished_at {
-                    Some(t) => t,
-                    None => continue,
-                };
-                let folder_str = folder.to_string_lossy().into_owned();
-                let name = acquisition_common::recording_display_name(&folder_str, &base_dir);
-                recordings.push(wire::PastRecording {
-                    folder: folder_str,
-                    name,
-                    ok: meta.ok,
-                    elapsed: time::Duration::seconds_f64(elapsed_seconds),
-                    groups_saved,
-                    finished_at: Some(finished_at),
-                    rating: meta.rating,
-                    comment: meta.comment,
-                });
-            }
-        }
+    // Newest first: sort by folder name (date/time-derived names sort lexicographically).
+    recordings.sort_by(|a, b| b.name.cmp(&a.name));
+    recordings
+}
+
+fn walk_for_recordings(dir: &Path, base_dir: &str, depth_remaining: u32, out: &mut Vec<RecordingEntry>) {
+    if depth_remaining == 0 {
+        return;
     }
 
-    // Reverse so newest is first (dirs are sorted lexicographically ascending)
-    recordings.reverse();
-    recordings
+    if let Some(meta) = read_metadata(dir) {
+        let (Some(elapsed_seconds), Some(groups_saved), Some(finished_at)) =
+            (meta.elapsed_seconds, meta.groups_saved, meta.finished_at)
+        else {
+            return;
+        };
+        let folder_str = dir.to_string_lossy().into_owned();
+        let name = acquisition_common::recording_display_name(&folder_str, base_dir);
+        out.push(RecordingEntry {
+            path: dir.to_path_buf(),
+            name,
+            ok: meta.ok,
+            elapsed: time::Duration::seconds_f64(elapsed_seconds),
+            groups_saved,
+            finished_at: Some(finished_at),
+            rating: meta.rating,
+            comment: meta.comment,
+        });
+        return;
+    }
+
+    let mut subdirs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().ok().is_some_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .collect();
+    subdirs.sort();
+
+    for subdir in subdirs {
+        walk_for_recordings(&subdir, base_dir, depth_remaining - 1, out);
+    }
 }

@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use crate::Args;
 
 mod library;
+mod naming;
 mod preview;
 mod ptp;
 mod sensor_cfg;
@@ -41,7 +42,7 @@ pub fn run(
             args.n_cameras,
             args.grouper_buffer_len,
             args.debayer,
-            args.output.clone(),
+            args.output_dir.clone(),
             args.frames,
         ),
         prev_wire_status: None,
@@ -147,7 +148,7 @@ fn notify_status_change(
         ptp,
         sensor_cfg,
         recordings,
-        selected_recording: server_state.preview_state.selected_folder().map(str::to_owned),
+        selected_recording: server_state.preview_state.selected_name().map(str::to_owned),
     };
 
     let status_changed = server_state.prev_wire_status.as_ref() != Some(&new_status);

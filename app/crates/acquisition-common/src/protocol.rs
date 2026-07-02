@@ -25,7 +25,7 @@ pub enum ClientCommand {
     StopAutoAdjust,
     StartRecording,
     StopRecording,
-    StartReplay { folder: String },
+    StartReplay { name: String },
     StopReplay,
     PauseReplay,
     ResumeReplay,
@@ -33,10 +33,10 @@ pub enum ClientCommand {
     StepReplayForward,
     StepReplayBackward,
     SeekReplayToFrame { frame_idx: u32 },
-    TrashRecording { folder: String },
-    RateRecording { folder: String, rating: u8 },
-    CommentRecording { folder: String, comment: String },
-    SelectRecording { folder: String },
+    TrashRecording { name: String },
+    RateRecording { name: String, rating: u8 },
+    CommentRecording { name: String, comment: String },
+    SelectRecording { name: String },
     /// Request (or, with `position: None`, clear) a full-resolution zoom crop for a camera.
     /// `position` is the crosshair location in normalized [0,1] image coordinates.
     SetZoom {
@@ -94,7 +94,6 @@ pub struct ServerAck {
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct PastRecording {
-    pub folder: String,
     pub name: String,
     pub ok: bool,
     pub elapsed: time::Duration,
@@ -163,11 +162,9 @@ pub enum Activity {
     Recording {
         elapsed: time::Duration,
         groups_saved: u32,
-        folder: String,
         name: String,
     },
     Replaying {
-        folder: String,
         name: String,
         frame_idx: u32,
         total_frames: u32,

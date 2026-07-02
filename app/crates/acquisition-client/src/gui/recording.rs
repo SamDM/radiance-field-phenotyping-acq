@@ -349,7 +349,7 @@ pub(super) struct RecordingState {
     hovered_star: Option<u8>,
     comment_text: String,
     comment_focused: bool,
-    selected_folder: Option<String>,
+    selected_name: Option<String>,
     /// True when the server reports Activity::Replaying.
     pub(super) replay_mode: bool,
     replay_paused: bool,
@@ -372,7 +372,7 @@ impl Default for RecordingState {
             hovered_star: None,
             comment_text: String::new(),
             comment_focused: false,
-            selected_folder: None,
+            selected_name: None,
             replay_mode: false,
             replay_paused: false,
             replay_progress: None,
@@ -399,8 +399,8 @@ fn reconcile_pending(
 
 impl RecordingState {
     fn selected_recording<'a>(&self, recordings: &'a [PastRecording]) -> Option<&'a PastRecording> {
-        match &self.selected_folder {
-            Some(f) => recordings.iter().find(|r| r.folder == *f),
+        match &self.selected_name {
+            Some(n) => recordings.iter().find(|r| r.name == *n),
             None => recordings.first(),
         }
     }
@@ -434,10 +434,10 @@ impl RecordingState {
 
         let recordings = &server_status.value.recordings;
 
-        // If the selected folder was removed (trashed), reset selection
-        if let Some(ref folder) = self.selected_folder {
-            if !recordings.iter().any(|r| r.folder == *folder) {
-                self.selected_folder = None;
+        // If the selected recording was removed (trashed), reset selection
+        if let Some(ref name) = self.selected_name {
+            if !recordings.iter().any(|r| r.name == *name) {
+                self.selected_name = None;
                 self.pending_trash = None;
                 self.pending_rating = None;
                 self.pending_comment = None;
@@ -450,8 +450,8 @@ impl RecordingState {
         // Sync only when we have no pending selection (avoid stomping optimistic local state).
         if self.pending_selection.is_none() {
             let server_sel = server_status.value.selected_recording.as_deref();
-            if self.selected_folder.as_deref() != server_sel {
-                self.selected_folder = server_sel.map(str::to_owned);
+            if self.selected_name.as_deref() != server_sel {
+                self.selected_name = server_sel.map(str::to_owned);
                 self.pending_rating = None;
                 self.pending_comment = None;
                 self.local_star_value = self
@@ -475,7 +475,7 @@ impl RecordingState {
     }
 
     fn select_recording(&mut self, rec: &PastRecording) {
-        self.selected_folder = Some(rec.folder.clone());
+        self.selected_name = Some(rec.name.clone());
         self.local_star_value = rec.rating;
         self.comment_text = rec.comment.clone().unwrap_or_default();
         self.pending_rating = None;
@@ -568,7 +568,7 @@ impl RecordingState {
                         DropdownCol::FixedWidth(stars, 60.0),
                         DropdownCol::Text(rec.comment.clone().unwrap_or_default()),
                     ],
-                    selected: selected.as_ref().map_or(false, |s| s.folder == rec.folder),
+                    selected: selected.as_ref().map_or(false, |s| s.name == rec.name),
                 }
             })
             .collect();
@@ -580,13 +580,13 @@ impl RecordingState {
             .show(ui)
     }
 
-    fn send_comment(&mut self, folder: &str, cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>) {
+    fn send_comment(&mut self, name: &str, cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>) {
         let cmd_uuid = Uuid::new_v4();
         self.pending_comment = Some(cmd_uuid);
         let _ = cmd_tx.send(ClientMessage {
             uuid: cmd_uuid,
             command: ClientCommand::CommentRecording {
-                folder: folder.to_string(),
+                name: name.to_string(),
                 comment: self.comment_text.clone(),
             },
         });
@@ -595,7 +595,7 @@ impl RecordingState {
     fn show_trash_and_stars(
         &mut self,
         ui: &mut egui::Ui,
-        folder: &str,
+        name: &str,
         cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
     ) {
         let trash_pending = self.pending_trash.is_some();
@@ -610,7 +610,7 @@ impl RecordingState {
             self.pending_trash = Some(cmd_uuid);
             let _ = cmd_tx.send(ClientMessage {
                 uuid: cmd_uuid,
-                command: ClientCommand::TrashRecording { folder: folder.to_string() },
+                command: ClientCommand::TrashRecording { name: name.to_string() },
             });
         }
 
@@ -641,7 +641,7 @@ impl RecordingState {
                 let _ = cmd_tx.send(ClientMessage {
                     uuid: cmd_uuid,
                     command: ClientCommand::RateRecording {
-                        folder: folder.to_string(),
+                        name: name.to_string(),
                         rating: i,
                     },
                 });
@@ -653,7 +653,7 @@ impl RecordingState {
     fn show_comment(
         &mut self,
         ui: &mut egui::Ui,
-        folder: &str,
+        name: &str,
         cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
     ) {
         let comment_pending = self.pending_comment.is_some();
@@ -667,7 +667,7 @@ impl RecordingState {
         );
         self.comment_focused = response.has_focus();
         if response.lost_focus() {
-            self.send_comment(folder, cmd_tx);
+            self.send_comment(name, cmd_tx);
         }
     }
 
@@ -857,7 +857,6 @@ impl RecordingState {
                         String::new()
                     };
                     let dummy_selected = Some(PastRecording {
-                        folder: String::new(),
                         name,
                         ok: false,
                         elapsed: time::Duration::ZERO,
@@ -875,7 +874,7 @@ impl RecordingState {
                         self.pending_selection = Some(cmd_uuid);
                         let _ = cmd_tx.send(ClientMessage {
                             uuid: cmd_uuid,
-                            command: ClientCommand::SelectRecording { folder: rec.folder.clone() },
+                            command: ClientCommand::SelectRecording { name: rec.name.clone() },
                         });
                     }
                 } else {
@@ -912,7 +911,7 @@ impl RecordingState {
                     self.pending_replay = Some(cmd_uuid);
                     let cmd = if want_replay {
                         ClientCommand::StartReplay {
-                            folder: selected.as_ref().map(|s| s.folder.clone()).unwrap_or_default(),
+                            name: selected.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
                         }
                     } else {
                         ClientCommand::StopReplay
@@ -924,7 +923,7 @@ impl RecordingState {
                 if !is_recording {
                     if let Some(ref sel) = selected {
                         ui.horizontal(|ui| {
-                            self.show_trash_and_stars(ui, &sel.folder, cmd_tx);
+                            self.show_trash_and_stars(ui, &sel.name, cmd_tx);
                         });
                     } else {
                         ui.label("");
@@ -936,7 +935,7 @@ impl RecordingState {
                 // Row 2, Col 3: comment
                 if !is_recording {
                     if let Some(ref sel) = selected {
-                        self.show_comment(ui, &sel.folder, cmd_tx);
+                        self.show_comment(ui, &sel.name, cmd_tx);
                     } else {
                         ui.label("");
                     }
@@ -952,7 +951,7 @@ impl RecordingState {
             let cmd = if is_recording {
                 ClientCommand::StopRecording
             } else {
-                self.selected_folder = None;
+                self.selected_name = None;
                 ClientCommand::StartRecording
             };
             self.pending = Some(cmd_uuid);
