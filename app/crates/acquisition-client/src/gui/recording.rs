@@ -599,11 +599,12 @@ impl RecordingState {
         cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
     ) {
         let trash_pending = self.pending_trash.is_some();
-        if super::button::HoldToConfirmButton::new("🗑", "trash it")
+        if super::button::TrashLockButton::new()
             .hold_seconds(1.5)
             .unlock_seconds(5.0)
             .enabled(!trash_pending)
-            .hover_text("Long-click to unlock, then click to trash")
+            .trash_hover_text("Click the lock to unlock, then click here to trash")
+            .lock_hover_text("Long-click to unlock trashing")
             .show(ui)
         {
             let cmd_uuid = Uuid::new_v4();
