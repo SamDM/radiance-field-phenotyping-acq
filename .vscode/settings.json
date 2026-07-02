@@ -3,5 +3,6 @@
     100
   ],
   "rust-analyzer.cargo.features": "all",
-  "claudeCode.allowDangerouslySkipPermissions": true
+  "claudeCode.allowDangerouslySkipPermissions": true,
+  "git.detectWorktrees": true
 }
