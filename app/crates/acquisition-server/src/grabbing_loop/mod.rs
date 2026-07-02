@@ -41,9 +41,9 @@ pub fn run(
         preview_state: preview::PreviewIterState::new(
             args.n_cameras,
             args.grouper_buffer_len,
-            args.debayer,
             args.output_dir.clone(),
             args.frames,
+            args.frame_format,
         ),
         prev_wire_status: None,
     };
