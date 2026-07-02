@@ -19,17 +19,17 @@ impl PreviewIterState {
     pub(super) fn new(
         n_cameras: usize,
         grouper_buffer_len: usize,
-        debayer: bool,
         output_dir_template: String,
         max_n_frames: u32,
+        frame_format: crate::FrameFormat,
     ) -> Self {
         PreviewIterState {
             recordings: recordings::RecordingsIterState::new(
                 n_cameras,
                 grouper_buffer_len,
-                debayer,
                 output_dir_template,
                 max_n_frames,
+                frame_format,
             ),
             replay: None,
             zoom_requests: HashMap::new(),

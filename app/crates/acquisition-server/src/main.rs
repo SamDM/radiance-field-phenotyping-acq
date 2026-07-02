@@ -18,7 +18,40 @@ const DEFAULT_PREVIEW_ADDR: &str = "127.0.0.1:8082";
 const DEFAULT_AUTO_ADJUST_DURATION_SECS: u64 = 30;
 const DEFAULT_AUTO_ADJUST_MINIMIZE_GAIN: bool = false;
 const DEFAULT_AUTO_ADJUST_NO_BOOST_FRAMERATE: bool = false;
-const DEFAULT_DEBAYER: bool = false;
+const DEFAULT_FRAME_FORMAT: FrameFormat = FrameFormat::Tiff;
+
+/// On-disk container format for recorded frames.
+///
+/// `Tiff` and `Png` are lossless and save the raw Bayer mosaic straight from the
+/// sensor. `Jpeg` is lossy and debayers to RGB first — lossy compression must never
+/// run directly on a Bayer mosaic (its checkerboard-like color-filter pattern isn't
+/// real image content, and block-based/chroma-subsampled codecs would bake mosaic
+/// artifacts into the debayered result). Given that recorded frames feed 3D
+/// reconstruction, `Jpeg` uses "SfM-safe" turbojpeg settings: high quality and no
+/// chroma subsampling (4:4:4).
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum FrameFormat {
+    /// Uncompressed raw Bayer — fastest to write, largest on disk.
+    Tiff,
+    /// Losslessly compressed raw Bayer via the `png` crate.
+    Png,
+    /// Lossy, debayered RGB via turbojpeg (high quality, 4:4:4 chroma).
+    Jpeg,
+}
+
+impl FrameFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            FrameFormat::Tiff => "tiff",
+            FrameFormat::Png => "png",
+            FrameFormat::Jpeg => "jpg",
+        }
+    }
+
+    pub fn is_lossy(self) -> bool {
+        matches!(self, FrameFormat::Jpeg)
+    }
+}
 
 #[derive(Parser)]
 pub struct Args {
@@ -29,8 +62,8 @@ pub struct Args {
 
     /// Output directory template for recordings. Each recording gets its own directory
     /// expanded from this template; frame files are named internally as
-    /// `cam-{cam_idx}_frame-{frame_idx:05d}.tiff` within that directory. Supported
-    /// placeholders:
+    /// `cam-{cam_idx}_frame-{frame_idx:05d}.{ext}` (extension depends on
+    /// `--frame-format`) within that directory. Supported placeholders:
     ///   {local_date}      — date of recording start, e.g. 2026-04-21
     ///   {local_time}      — time of recording start, e.g. 14-30-00
     ///   {local_datetime}  — combined, e.g. 2026-04-21T14-30-00
@@ -39,6 +72,12 @@ pub struct Args {
         default_value = "$HOME/phenominator/{local_date}/{local_time}"
     )]
     pub output_dir: String,
+
+    /// On-disk format for recorded frames: `tiff` (uncompressed raw Bayer, fastest),
+    /// `png` (losslessly compressed raw Bayer via the `png` crate), or `jpeg` (lossy,
+    /// debayered RGB via turbojpeg — smallest files, but not bit-exact).
+    #[arg(long, value_enum, default_value_t = DEFAULT_FRAME_FORMAT)]
+    pub frame_format: FrameFormat,
 
     /// Timeout for auto-adjust convergence in seconds.
     #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_DURATION_SECS)]
@@ -52,10 +91,6 @@ pub struct Args {
     /// By default the framerate limiter is disabled during convergence for faster results.
     #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_NO_BOOST_FRAMERATE)]
     pub auto_adjust_no_boost_framerate: bool,
-
-    /// Debayer frames on the host after capture (BayerRG8 → RGB8)
-    #[arg(long, default_value_t = DEFAULT_DEBAYER)]
-    pub debayer: bool,
 
     /// Acquisition framerate in frames per second
     #[arg(long, default_value_t = DEFAULT_FRAMERATE)]

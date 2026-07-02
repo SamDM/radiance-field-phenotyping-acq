@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use acquisition_common::debayer::debayer_crop;
 use acquisition_common::protocol as wire;
@@ -10,13 +10,11 @@ use pylon::{CameraArray, GrabResult, PixelFormat};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
-use turbojpeg::{Compressor, Image, PixelFormat as TjPixelFormat};
+use turbojpeg::{Compressor, Image, PixelFormat as TjPixelFormat, Subsamp};
 
 use uuid::Uuid;
 
 use crate::utils::zipper::{StreamZipper, ZipError, ZipErrorReason, Zipped};
-
-const FRAME_EXT: &str = "tiff";
 
 fn accept_cmd(evt_tx: &broadcast::Sender<wire::ServerMessage>, cmd_uuid: Uuid, reason: &str) {
     info!("{reason}");
@@ -43,29 +41,29 @@ pub(super) struct RecordingsIterState {
     activity: AcquisitionActivity,
     n_cameras: usize,
     zipper: StreamZipper<Frame<Bayer>>,
-    debayer: bool,
     output_dir_template: String,
     max_n_frames: u32,
     library: library::RecordingLibrary,
+    frame_format: crate::FrameFormat,
 }
 
 impl RecordingsIterState {
     pub(super) fn new(
         n_cameras: usize,
         grouper_buffer_len: usize,
-        debayer: bool,
         output_dir_template: String,
         max_n_frames: u32,
+        frame_format: crate::FrameFormat,
     ) -> Self {
         let library = library::RecordingLibrary::new(&output_dir_template);
         RecordingsIterState {
             activity: AcquisitionActivity::Idle,
             n_cameras,
             zipper: StreamZipper::new(n_cameras, grouper_buffer_len),
-            debayer,
             output_dir_template,
             max_n_frames,
             library,
+            frame_format,
         }
     }
 
@@ -126,11 +124,11 @@ impl RecordingsIterState {
         let verified_ok = if ok {
             let mut missing: Vec<String> = Vec::new();
             for cam_idx in 0..self.n_cameras {
-                let first = folder.join(frame_filename(cam_idx, 0, FRAME_EXT));
+                let first = folder.join(frame_filename(cam_idx, 0, self.frame_format.extension()));
                 if !first.exists() {
                     missing.push(format!("cam {cam_idx} first frame: {}", first.display()));
                 }
-                let last = folder.join(frame_filename(cam_idx, groups_saved - 1, FRAME_EXT));
+                let last = folder.join(frame_filename(cam_idx, groups_saved - 1, self.frame_format.extension()));
                 if !last.exists() {
                     missing.push(format!("cam {cam_idx} last frame: {}", last.display()));
                 }
@@ -313,11 +311,11 @@ pub(super) fn iteration(
                 let saved = match process_grouped_frames_result(
                     result,
                     &state.output_dir_template,
-                    state.debayer,
                     &state.activity,
                     in_replay,
                     zoom_requests,
                     preview_tx,
+                    state.frame_format,
                 ) {
                     Ok(s) => s,
                     Err(e) => {
@@ -375,30 +373,50 @@ pub(super) fn iteration(
     Ok(())
 }
 
+/// Debayers `frame` to RGB and JPEG-compresses it with "SfM-safe" settings: high
+/// quality and no chroma subsampling (4:4:4). Lossy compression must never run
+/// directly on a raw Bayer mosaic — its checkerboard color-filter pattern isn't real
+/// image content, and turbojpeg's DCT blocks / chroma subsampling would bake mosaic
+/// artifacts into the debayered result. Recorded frames feed 3D reconstruction, where
+/// even subtle, position-correlated artifacts can bias feature matching.
+fn save_frame_jpeg_sfm_safe(frame: &AnyFrame, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let color = frame.clone().into_color();
+
+    let mut compressor = Compressor::new()?;
+    compressor.set_quality(95)?;
+    compressor.set_subsamp(Subsamp::None)?;
+    let jpeg = compressor.compress_to_vec(Image {
+        pixels: color.data.as_slice(),
+        width: color.width as usize,
+        pitch: color.width as usize * 3,
+        height: color.height as usize,
+        format: TjPixelFormat::RGB,
+    })?;
+
+    std::fs::write(path, &jpeg)?;
+    std::fs::write(path.with_extension("json"), serde_json::to_string_pretty(&color.metadata())?)?;
+    Ok(())
+}
+
 fn process_grouped_frames_result(
     result: Result<Zipped<Frame<Bayer>>, ZipError<Frame<Bayer>>>,
     output_dir_template: &str,
-    debayer: bool,
     camera_state: &AcquisitionActivity,
     in_replay: bool,
     zoom_requests: &HashMap<String, (f32, f32)>,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
+    frame_format: crate::FrameFormat,
 ) -> Result<Option<u32>, Box<dyn std::error::Error>> {
     match result {
         Ok(group) => {
-            let frames: Vec<AnyFrame> = if debayer {
-                group
-                    .items
-                    .into_iter()
-                    .map(|(f, _ts)| f.into_color().into_any())
-                    .collect()
-            } else {
-                group
-                    .items
-                    .into_iter()
-                    .map(|(f, _ts)| f.into_any())
-                    .collect()
-            };
+            // Always save the raw Bayer mosaic for tiff/png (1 byte/pixel vs. 3 for
+            // debayered RGB) — downstream processing debayers from storage. Live
+            // preview below already debayers on the fly regardless of what gets saved.
+            let frames: Vec<AnyFrame> = group
+                .items
+                .into_iter()
+                .map(|(f, _ts)| f.into_any())
+                .collect();
 
             if !in_replay {
                 let previews = make_jpeg_previews(&frames, zoom_requests);
@@ -412,9 +430,34 @@ fn process_grouped_frames_result(
             {
                 let dir = expand_dir(output_dir_template, *start);
                 std::fs::create_dir_all(&dir)?;
-                for (cam_idx, frame) in frames.iter().enumerate() {
-                    let path = dir.join(frame_filename(cam_idx, *groups_saved, FRAME_EXT));
-                    frame.save(&path)?;
+                let paths: Vec<PathBuf> = (0..frames.len())
+                    .map(|cam_idx| dir.join(frame_filename(cam_idx, *groups_saved, frame_format.extension())))
+                    .collect();
+
+                // Every camera's encode is independent (no shared state), and even the
+                // fast lossless paths leave most cores idle — so save all cameras
+                // concurrently rather than one after another. Scoped threads join
+                // before this call returns, so there's no persistent worker/queue:
+                // just a bounded fan-out for this one frame group.
+                let results: Vec<Result<(), String>> = std::thread::scope(|scope| {
+                    let handles: Vec<_> = frames
+                        .iter()
+                        .zip(paths.iter())
+                        .map(|(frame, path)| {
+                            scope.spawn(move || {
+                                if frame_format.is_lossy() {
+                                    save_frame_jpeg_sfm_safe(frame, path).map_err(|e| e.to_string())
+                                } else {
+                                    frame.save(path).map_err(|e| e.to_string())
+                                }
+                            })
+                        })
+                        .collect();
+                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                });
+
+                for (cam_idx, (result, frame)) in results.into_iter().zip(frames.iter()).enumerate() {
+                    result.map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
                     info!(
                         camera = cam_idx,
                         group = *groups_saved,

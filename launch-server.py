@@ -13,7 +13,7 @@ try:
         #  "--auto-adjust-duration-secs", "30",
         #  "--auto-adjust-minimize-gain",
         #  "--auto-adjust-no-boost-framerate",
-         "--debayer",
+         "--frame-format", "png",
         ],
         env={**__import__("os").environ, "RUST_LOG": "info"},
     )
