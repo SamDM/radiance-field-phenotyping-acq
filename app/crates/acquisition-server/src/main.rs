@@ -27,17 +27,18 @@ pub struct Args {
     #[arg(long, default_value_t = DEFAULT_FRAME_COUNT)]
     pub frames: u32,
 
-    /// Output path template. Supported placeholders:
+    /// Output directory template for recordings. Each recording gets its own directory
+    /// expanded from this template; frame files are named internally as
+    /// `cam-{cam_idx}_frame-{frame_idx:05d}.tiff` within that directory. Supported
+    /// placeholders:
     ///   {local_date}      — date of recording start, e.g. 2026-04-21
     ///   {local_time}      — time of recording start, e.g. 14-30-00
     ///   {local_datetime}  — combined, e.g. 2026-04-21T14-30-00
-    ///   {cam_idx}         — zero-based camera index
-    ///   {frame_idx:05d}   — zero-padded frame index (resets each recording)
     #[arg(
         long,
-        default_value = "$HOME/phenominator/{local_date}/{local_time}/cam-{cam_idx}_frame-{frame_idx:05d}.tiff"
+        default_value = "$HOME/phenominator/{local_date}/{local_time}"
     )]
-    pub output: String,
+    pub output_dir: String,
 
     /// Timeout for auto-adjust convergence in seconds.
     #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_DURATION_SECS)]

@@ -12,7 +12,7 @@ pub(super) struct PreviewIterState {
     recordings: recordings::RecordingsIterState,
     replay: Option<replay::ReplayIterState>,
     zoom_requests: HashMap<String, (f32, f32)>,
-    selected_folder: Option<String>,
+    selected_name: Option<String>,
 }
 
 impl PreviewIterState {
@@ -20,7 +20,7 @@ impl PreviewIterState {
         n_cameras: usize,
         grouper_buffer_len: usize,
         debayer: bool,
-        output_path_template: String,
+        output_dir_template: String,
         max_n_frames: u32,
     ) -> Self {
         PreviewIterState {
@@ -28,12 +28,12 @@ impl PreviewIterState {
                 n_cameras,
                 grouper_buffer_len,
                 debayer,
-                output_path_template,
+                output_dir_template,
                 max_n_frames,
             ),
             replay: None,
             zoom_requests: HashMap::new(),
-            selected_folder: None,
+            selected_name: None,
         }
     }
 
@@ -41,12 +41,12 @@ impl PreviewIterState {
         self.recordings.is_recording()
     }
 
-    pub(super) fn recordings(&self) -> &[wire::PastRecording] {
+    pub(super) fn recordings(&self) -> Vec<wire::PastRecording> {
         self.recordings.past_recordings()
     }
 
-    pub(super) fn selected_folder(&self) -> Option<&str> {
-        self.selected_folder.as_deref()
+    pub(super) fn selected_name(&self) -> Option<&str> {
+        self.selected_name.as_deref()
     }
 
     /// Returns the current activity, accounting for replay, auto-adjusting, and live states.
@@ -93,38 +93,39 @@ pub(super) fn iteration(
                 }
                 let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
             }
-            wire::ClientCommand::SelectRecording { folder } => {
-                state.selected_folder = Some(folder.clone());
+            wire::ClientCommand::SelectRecording { name } => {
+                state.selected_name = Some(name.clone());
                 let already_replaying_this = state.replay.as_ref()
-                    .map_or(false, |rs| rs.folder() == folder);
+                    .map_or(false, |rs| rs.name() == name);
                 if state.replay.is_some() && !already_replaying_this {
                     let was_paused = state.replay.as_ref().map_or(false, |rs| rs.is_paused());
-                    let name = state
-                        .recordings
-                        .past_recordings()
-                        .iter()
-                        .find(|r| &r.folder == folder)
-                        .map(|r| r.name.clone())
-                        .unwrap_or_else(|| folder.clone());
-                    match replay::ReplayIterState::new(folder, &name) {
-                        Ok(mut rs) => {
-                            if was_paused {
-                                rs.pause();
-                                let paths = rs.current_frame_paths().to_vec();
-                                replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    match state.recordings.find_by_name(name) {
+                        Some(rec) => {
+                            match replay::ReplayIterState::new(&rec.path, &rec.name) {
+                                Ok(mut rs) => {
+                                    if was_paused {
+                                        rs.pause();
+                                        let paths = rs.current_frame_paths().to_vec();
+                                        replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                                    }
+                                    state.replay = Some(rs);
+                                    info!(name, "replay restarted for new selection");
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "replay restart failed, stopping replay");
+                                    state.replay = None;
+                                }
                             }
-                            state.replay = Some(rs);
-                            info!(folder, "replay restarted for new selection");
                         }
-                        Err(e) => {
-                            warn!(error = %e, "replay restart failed, stopping replay");
+                        None => {
+                            warn!(name, "select recording: no matching recording, stopping replay");
                             state.replay = None;
                         }
                     }
                 }
                 let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
             }
-            wire::ClientCommand::StartReplay { folder } => {
+            wire::ClientCommand::StartReplay { name } => {
                 if state.recordings.is_recording() {
                     warn!("replay start rejected: recording in progress");
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(
@@ -133,22 +134,23 @@ pub(super) fn iteration(
                     ));
                     continue;
                 }
-                let name = state
-                    .recordings
-                    .past_recordings()
-                    .iter()
-                    .find(|r| &r.folder == folder)
-                    .map(|r| r.name.clone())
-                    .unwrap_or_else(|| folder.clone());
-                match replay::ReplayIterState::new(folder, &name) {
-                    Ok(rs) => {
-                        state.replay = Some(rs);
-                        info!(folder, "replay started");
-                        let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "replay start failed");
-                        let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, e));
+                match state.recordings.find_by_name(name) {
+                    Some(rec) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
+                        Ok(rs) => {
+                            state.replay = Some(rs);
+                            info!(name, "replay started");
+                            let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "replay start failed");
+                            let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, e));
+                        }
+                    },
+                    None => {
+                        let _ = evt_tx.send(wire::ServerMessage::ack_err(
+                            message.uuid,
+                            "no matching recording".to_string(),
+                        ));
                     }
                 }
             }
@@ -236,13 +238,13 @@ pub(super) fn iteration(
 
     let in_replay = state.replay.is_some();
 
-    // Snapshot folder order before iteration so we can find the adjacent selection if a
+    // Snapshot name order before iteration so we can find the adjacent selection if a
     // recording is trashed (the library removes it before we can query its former index).
-    let pre_folders: Vec<String> = state
+    let pre_names: Vec<String> = state
         .recordings
         .past_recordings()
         .iter()
-        .map(|r| r.folder.clone())
+        .map(|r| r.name.clone())
         .collect();
 
     // Always drain the camera frame buffer, even during replay, to prevent
@@ -258,23 +260,23 @@ pub(super) fn iteration(
         preview_tx,
     )?;
 
-    // If the selected folder was trashed, advance to the nearest remaining neighbor.
-    if let Some(ref sel) = state.selected_folder.clone() {
-        let still_exists = state.recordings.past_recordings().iter().any(|r| &r.folder == sel);
+    // If the selected recording was trashed, advance to the nearest remaining neighbor.
+    if let Some(ref sel) = state.selected_name.clone() {
+        let still_exists = state.recordings.past_recordings().iter().any(|r| &r.name == sel);
         if !still_exists {
-            let candidate = pre_folders.iter().position(|f| f == sel).and_then(|i| {
+            let candidate = pre_names.iter().position(|n| n == sel).and_then(|i| {
                 // Prefer the previous recording; fall back to what is now at the same index.
-                let prev = i.checked_sub(1).and_then(|j| pre_folders.get(j));
-                let next = pre_folders.get(i + 1);
-                (prev.or(next)).and_then(|folder| {
-                    if state.recordings.past_recordings().iter().any(|r| &r.folder == folder) {
-                        Some(folder.clone())
+                let prev = i.checked_sub(1).and_then(|j| pre_names.get(j));
+                let next = pre_names.get(i + 1);
+                (prev.or(next)).and_then(|name| {
+                    if state.recordings.past_recordings().iter().any(|r| &r.name == name) {
+                        Some(name.clone())
                     } else {
                         None
                     }
                 })
             });
-            state.selected_folder = candidate;
+            state.selected_name = candidate;
         }
     }
 

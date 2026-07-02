@@ -1,14 +1,12 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use acquisition_common;
 use acquisition_common::debayer::debayer_crop;
 use acquisition_common::protocol as wire;
 use acquisition_common::{AnyFrame, Bayer, Frame};
 use image::imageops::FilterType;
 use image::RgbImage;
 use pylon::{CameraArray, GrabResult, PixelFormat};
-use time::macros::format_description;
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -17,6 +15,8 @@ use turbojpeg::{Compressor, Image, PixelFormat as TjPixelFormat};
 use uuid::Uuid;
 
 use crate::utils::zipper::{StreamZipper, ZipError, ZipErrorReason, Zipped};
+
+const FRAME_EXT: &str = "tiff";
 
 fn accept_cmd(evt_tx: &broadcast::Sender<wire::ServerMessage>, cmd_uuid: Uuid, reason: &str) {
     info!("{reason}");
@@ -28,7 +28,8 @@ fn reject_cmd(evt_tx: &broadcast::Sender<wire::ServerMessage>, cmd_uuid: Uuid, r
     let _ = evt_tx.send(wire::ServerMessage::ack_err(cmd_uuid, reason.to_string()));
 }
 
-use super::super::library::{self, write_metadata};
+use super::super::library::{self, write_metadata, RecordingEntry};
+use super::super::naming::{expand_dir, frame_filename};
 
 enum AcquisitionActivity {
     Idle,
@@ -43,7 +44,7 @@ pub(super) struct RecordingsIterState {
     n_cameras: usize,
     zipper: StreamZipper<Frame<Bayer>>,
     debayer: bool,
-    output_path_template: String,
+    output_dir_template: String,
     max_n_frames: u32,
     library: library::RecordingLibrary,
 }
@@ -53,16 +54,16 @@ impl RecordingsIterState {
         n_cameras: usize,
         grouper_buffer_len: usize,
         debayer: bool,
-        output_path_template: String,
+        output_dir_template: String,
         max_n_frames: u32,
     ) -> Self {
-        let library = library::RecordingLibrary::new(&output_path_template);
+        let library = library::RecordingLibrary::new(&output_dir_template);
         RecordingsIterState {
             activity: AcquisitionActivity::Idle,
             n_cameras,
             zipper: StreamZipper::new(n_cameras, grouper_buffer_len),
             debayer,
-            output_path_template,
+            output_dir_template,
             max_n_frames,
             library,
         }
@@ -78,28 +79,27 @@ impl RecordingsIterState {
             AcquisitionActivity::Recording { start, groups_saved } => wire::Activity::Recording {
                 elapsed: OffsetDateTime::now_utc() - start,
                 groups_saved,
-                folder: self.recording_folder(start),
                 name: self.recording_name(start),
             },
         }
     }
 
-    pub(super) fn past_recordings(&self) -> &[wire::PastRecording] {
-        self.library.recordings()
+    pub(super) fn past_recordings(&self) -> Vec<wire::PastRecording> {
+        self.library.wire_recordings()
     }
 
-    fn recording_folder(&self, start: OffsetDateTime) -> String {
-        let sample_path = expand_path(&self.output_path_template, start, 0, 0);
-        sample_path
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
+    pub(super) fn find_by_name(&self, name: &str) -> Option<&RecordingEntry> {
+        self.library.find_by_name(name)
+    }
+
+    fn recording_folder(&self, start: OffsetDateTime) -> PathBuf {
+        expand_dir(&self.output_dir_template, start)
     }
 
     fn recording_name(&self, start: OffsetDateTime) -> String {
         let folder = self.recording_folder(start);
-        let base = library::base_dir_from_template(&self.output_path_template);
-        acquisition_common::recording_display_name(&folder, &base)
+        let base = library::base_dir_from_template(&self.output_dir_template);
+        acquisition_common::recording_display_name(&folder.to_string_lossy(), &base)
     }
 
     fn finish_recording(&mut self, start: OffsetDateTime, ok: bool, evt_tx: &broadcast::Sender<wire::ServerMessage>) {
@@ -126,11 +126,11 @@ impl RecordingsIterState {
         let verified_ok = if ok {
             let mut missing: Vec<String> = Vec::new();
             for cam_idx in 0..self.n_cameras {
-                let first = expand_path(&self.output_path_template, start, cam_idx, 0);
+                let first = folder.join(frame_filename(cam_idx, 0, FRAME_EXT));
                 if !first.exists() {
                     missing.push(format!("cam {cam_idx} first frame: {}", first.display()));
                 }
-                let last = expand_path(&self.output_path_template, start, cam_idx, groups_saved - 1);
+                let last = folder.join(frame_filename(cam_idx, groups_saved - 1, FRAME_EXT));
                 if !last.exists() {
                     missing.push(format!("cam {cam_idx} last frame: {}", last.display()));
                 }
@@ -149,12 +149,12 @@ impl RecordingsIterState {
             false
         };
 
-        let lr = wire::PastRecording {
-            folder, name, ok: verified_ok, elapsed, groups_saved,
+        let lr = RecordingEntry {
+            path: folder, name, ok: verified_ok, elapsed, groups_saved,
             finished_at: Some(OffsetDateTime::now_utc()),
             rating: None, comment: None,
         };
-        write_metadata(&lr.folder, &lr);
+        write_metadata(&lr.path, &lr);
         self.library.push(lr);
     }
 }
@@ -179,9 +179,9 @@ pub(super) fn iteration(
     }
 
     enum MetadataCommand {
-        Trash { folder: String },
-        Rate { folder: String, rating: u8 },
-        Comment { folder: String, comment: String },
+        Trash { name: String },
+        Rate { name: String, rating: u8 },
+        Comment { name: String, comment: String },
     }
 
     let mut recording_cmds: Vec<(Uuid, RecordingCommand)> = Vec::new();
@@ -194,14 +194,14 @@ pub(super) fn iteration(
             wire::ClientCommand::StopRecording => {
                 recording_cmds.push((message.uuid, RecordingCommand::Stop));
             }
-            wire::ClientCommand::TrashRecording { folder } => {
-                metadata_cmds.push((message.uuid, MetadataCommand::Trash { folder: folder.clone() }));
+            wire::ClientCommand::TrashRecording { name } => {
+                metadata_cmds.push((message.uuid, MetadataCommand::Trash { name: name.clone() }));
             }
-            wire::ClientCommand::RateRecording { folder, rating } => {
-                metadata_cmds.push((message.uuid, MetadataCommand::Rate { folder: folder.clone(), rating: *rating }));
+            wire::ClientCommand::RateRecording { name, rating } => {
+                metadata_cmds.push((message.uuid, MetadataCommand::Rate { name: name.clone(), rating: *rating }));
             }
-            wire::ClientCommand::CommentRecording { folder, comment } => {
-                metadata_cmds.push((message.uuid, MetadataCommand::Comment { folder: folder.clone(), comment: comment.clone() }));
+            wire::ClientCommand::CommentRecording { name, comment } => {
+                metadata_cmds.push((message.uuid, MetadataCommand::Comment { name: name.clone(), comment: comment.clone() }));
             }
             wire::ClientCommand::SetSensorCfg(_)
             | wire::ClientCommand::StartAutoAdjust { .. }
@@ -252,14 +252,14 @@ pub(super) fn iteration(
 
     for (cmd_uuid, meta_cmd) in metadata_cmds {
         match meta_cmd {
-            MetadataCommand::Trash { ref folder } => {
-                if let Some(rec) = state.library.find_mut(folder) {
-                    let name = rec.name.clone();
+            MetadataCommand::Trash { ref name } => {
+                if let Some(rec) = state.library.find_by_name(name) {
+                    let path = rec.path.clone();
                     let elapsed = rec.elapsed;
                     let groups_saved = rec.groups_saved;
-                    match std::fs::remove_dir_all(folder) {
+                    match std::fs::remove_dir_all(&path) {
                         Ok(()) => {
-                            state.library.remove(folder);
+                            state.library.remove(name);
                             let total_secs = elapsed.whole_seconds();
                             let mins = total_secs / 60;
                             let secs = total_secs % 60;
@@ -281,21 +281,21 @@ pub(super) fn iteration(
                     reject_cmd(evt_tx, cmd_uuid, "no matching recording for metadata command");
                 }
             }
-            MetadataCommand::Rate { ref folder, rating } => {
+            MetadataCommand::Rate { ref name, rating } => {
                 if !(1..=5).contains(&rating) {
                     reject_cmd(evt_tx, cmd_uuid, "invalid rating (must be 1-5)");
-                } else if let Some(lr) = state.library.find_mut(folder) {
+                } else if let Some(lr) = state.library.find_by_name_mut(name) {
                     lr.rating = Some(rating);
-                    write_metadata(folder, lr);
+                    write_metadata(&lr.path, lr);
                     accept_cmd(evt_tx, cmd_uuid, &format!("rating set to {rating}"));
                 } else {
                     reject_cmd(evt_tx, cmd_uuid, "no matching recording for metadata command");
                 }
             }
-            MetadataCommand::Comment { ref folder, ref comment } => {
-                if let Some(lr) = state.library.find_mut(folder) {
+            MetadataCommand::Comment { ref name, ref comment } => {
+                if let Some(lr) = state.library.find_by_name_mut(name) {
                     lr.comment = Some(comment.clone());
-                    write_metadata(folder, lr);
+                    write_metadata(&lr.path, lr);
                     accept_cmd(evt_tx, cmd_uuid, "comment saved");
                 } else {
                     reject_cmd(evt_tx, cmd_uuid, "no matching recording for metadata command");
@@ -312,7 +312,7 @@ pub(super) fn iteration(
             for result in state.zipper.push(frame, cam_idx, ts) {
                 let saved = match process_grouped_frames_result(
                     result,
-                    &state.output_path_template,
+                    &state.output_dir_template,
                     state.debayer,
                     &state.activity,
                     in_replay,
@@ -377,7 +377,7 @@ pub(super) fn iteration(
 
 fn process_grouped_frames_result(
     result: Result<Zipped<Frame<Bayer>>, ZipError<Frame<Bayer>>>,
-    output_path_template: &str,
+    output_dir_template: &str,
     debayer: bool,
     camera_state: &AcquisitionActivity,
     in_replay: bool,
@@ -410,11 +410,10 @@ fn process_grouped_frames_result(
                 groups_saved,
             } = camera_state
             {
+                let dir = expand_dir(output_dir_template, *start);
+                std::fs::create_dir_all(&dir)?;
                 for (cam_idx, frame) in frames.iter().enumerate() {
-                    let path = expand_path(output_path_template, *start, cam_idx, *groups_saved);
-                    if let Some(parent) = path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
+                    let path = dir.join(frame_filename(cam_idx, *groups_saved, FRAME_EXT));
                     frame.save(&path)?;
                     info!(
                         camera = cam_idx,
@@ -440,30 +439,6 @@ fn process_grouped_frames_result(
         }
     }
     Ok(None)
-}
-
-fn expand_path(
-    template: &str,
-    recording_start: OffsetDateTime,
-    cam_idx: usize,
-    group_idx: u32,
-) -> PathBuf {
-    let date = recording_start
-        .format(format_description!("[year]-[month]-[day]"))
-        .expect("OffsetDateTime formatting cannot fail");
-    let time = recording_start
-        .format(format_description!("[hour]-[minute]-[second]"))
-        .expect("OffsetDateTime formatting cannot fail");
-    let datetime = format!("{date}T{time}");
-    let home = std::env::var("HOME").unwrap_or_default();
-    let s = template
-        .replace("$HOME", &home)
-        .replace("{local_datetime}", &datetime)
-        .replace("{local_date}", &date)
-        .replace("{local_time}", &time)
-        .replace("{cam_idx}", &cam_idx.to_string())
-        .replace("{frame_idx:05d}", &format!("{:05}", group_idx));
-    Path::new(&s).to_path_buf()
 }
 
 pub(super) fn extract_zoom(frame: &AnyFrame, rel: (f32, f32)) -> wire::Zoom {
