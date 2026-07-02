@@ -6,6 +6,9 @@ use eframe::egui;
 use super::{ConnectionAttempt, Timed};
 
 const NOTICE_DISPLAY_DURATION: Duration = Duration::from_secs(10);
+/// How long the background behind the latest notice flashes for after it
+/// arrives, to catch the eye before it settles into the plain display.
+const NOTICE_FLASH_DURATION: Duration = Duration::from_secs(2);
 
 enum Severity {
     Ok,
@@ -29,6 +32,16 @@ fn notice_color(severity: &NoticeSeverity) -> egui::Color32 {
         NoticeSeverity::Warn => egui::Color32::YELLOW,
         NoticeSeverity::Error => egui::Color32::RED,
     }
+}
+
+/// Background color for the "just arrived" notice flash: starts solid in
+/// the notice's severity color and smoothly fades out over
+/// `NOTICE_FLASH_DURATION`.
+fn flash_color(severity: &NoticeSeverity, elapsed: Duration) -> egui::Color32 {
+    let t = elapsed.as_secs_f32() / NOTICE_FLASH_DURATION.as_secs_f32();
+    let alpha = (1.0 - t.min(1.0)) * 200.0;
+    let c = notice_color(severity);
+    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha as u8)
 }
 
 #[derive(Default)]
@@ -123,8 +136,16 @@ impl StatusBarState {
             }
 
             if let Some(recent) = notices.last() {
-                if recent.at.elapsed() < NOTICE_DISPLAY_DURATION {
-                    notice_label(ui, recent);
+                let elapsed = recent.at.elapsed();
+                if elapsed < NOTICE_DISPLAY_DURATION {
+                    if elapsed < NOTICE_FLASH_DURATION {
+                        let bg = flash_color(&recent.value.severity, elapsed);
+                        egui::Frame::NONE.fill(bg).show(ui, |ui| notice_label(ui, recent));
+                        // Keep repainting so the flash animation actually plays.
+                        ui.ctx().request_repaint();
+                    } else {
+                        notice_label(ui, recent);
+                    }
                 }
             }
         });
