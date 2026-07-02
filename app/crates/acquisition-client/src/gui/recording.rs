@@ -563,8 +563,8 @@ impl RecordingState {
                 DropdownRow {
                     cols: vec![
                         DropdownCol::Text(rec.name.clone()),
-                        DropdownCol::Text(rec.groups_saved.to_string()),
                         DropdownCol::Text(format_elapsed(rec.elapsed)),
+                        DropdownCol::Text(rec.groups_saved.to_string()),
                         DropdownCol::FixedWidth(stars, 60.0),
                         DropdownCol::Text(rec.comment.clone().unwrap_or_default()),
                     ],
@@ -577,6 +577,13 @@ impl RecordingState {
             .button_width(button_width)
             .enabled(enabled)
             .rows(rows)
+            .footer(vec![
+                ("date/time".to_string(), "Recording name and start time".to_string()),
+                ("⏱".to_string(), "Total elapsed recording time".to_string()),
+                ("#".to_string(), "Number of frames saved".to_string()),
+                ("rating".to_string(), "Star rating".to_string()),
+                ("comment".to_string(), "User comment".to_string()),
+            ])
             .show(ui)
     }
 

@@ -17,6 +17,7 @@ pub struct Dropdown<'a> {
     max_height: f32,
     rows: Vec<DropdownRow>,
     enabled: bool,
+    footer: Option<Vec<(String, String)>>,
 }
 
 impl<'a> Dropdown<'a> {
@@ -28,6 +29,7 @@ impl<'a> Dropdown<'a> {
             max_height: 300.0,
             rows: Vec::new(),
             enabled: true,
+            footer: None,
         }
     }
 
@@ -43,6 +45,12 @@ impl<'a> Dropdown<'a> {
 
     pub fn enabled(mut self, enabled: bool) -> Self {
         self.enabled = enabled;
+        self
+    }
+
+    /// A row of (label, hover text) shown below all rows, explaining what each column means.
+    pub fn footer(mut self, footer: Vec<(String, String)>) -> Self {
+        self.footer = Some(footer);
         self
     }
 
@@ -93,8 +101,9 @@ impl<'a> Dropdown<'a> {
 
         let row_spacing = 2.0;
         let row_h = ui.spacing().interact_size.y + row_spacing;
+        let footer_rows = if self.footer.is_some() { 1 } else { 0 };
         let max_height_from_space = ui.ctx().content_rect().bottom() - rect.bottom() - ui.spacing().window_margin.sum().y;
-        let content_height = (self.rows.len() as f32 * row_h).min(self.max_height).min(max_height_from_space);
+        let content_height = ((self.rows.len() + footer_rows) as f32 * row_h).min(self.max_height).min(max_height_from_space);
 
         let font_id = egui::TextStyle::Body.resolve(ui.style());
         let col_spacing = 8.0;
@@ -115,6 +124,17 @@ impl<'a> Dropdown<'a> {
                 col_widths[ci] = col_widths[ci].max(w);
             }
         }
+        if let Some(footer) = &self.footer {
+            for (ci, (text, _hover)) in footer.iter().enumerate().take(num_cols) {
+                let galley = ui.painter().layout_no_wrap(
+                    text.clone(),
+                    font_id.clone(),
+                    egui::Color32::TRANSPARENT,
+                );
+                let w = galley.size().x + if ci == 0 { ui.spacing().button_padding.x * 2.0 } else { 0.0 };
+                col_widths[ci] = col_widths[ci].max(w);
+            }
+        }
         let content_width: f32 = col_widths.iter().sum::<f32>() + col_spacing * (num_cols.saturating_sub(1) as f32);
         let max_width = ui.ctx().content_rect().right() - rect.left() - ui.spacing().window_margin.sum().x;
         let popup_width = content_width.max(self.button_width).min(max_width);
@@ -122,7 +142,7 @@ impl<'a> Dropdown<'a> {
         egui::containers::Popup::from_toggle_button_response(&response)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
-                ui.set_min_width(popup_width);
+                ui.set_width(popup_width);
                 ui.set_min_height(content_height);
                 egui::ScrollArea::vertical().max_height(content_height).show(ui, |ui| {
                     egui::Grid::new(self.id)
@@ -150,6 +170,13 @@ impl<'a> Dropdown<'a> {
                                             );
                                         }
                                     }
+                                }
+                                ui.end_row();
+                            }
+
+                            if let Some(footer) = &self.footer {
+                                for (text, hover) in footer.iter().take(num_cols) {
+                                    ui.weak(text).on_hover_text(hover);
                                 }
                                 ui.end_row();
                             }
