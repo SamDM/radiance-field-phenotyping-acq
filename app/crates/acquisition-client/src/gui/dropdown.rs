@@ -101,9 +101,13 @@ impl<'a> Dropdown<'a> {
 
         let row_spacing = 2.0;
         let row_h = ui.spacing().interact_size.y + row_spacing;
-        let footer_rows = if self.footer.is_some() { 1 } else { 0 };
+        // Height reserved for the frozen footer (row + separator), kept out of the scroll area.
+        let footer_h = if self.footer.is_some() { row_h + 12.0 } else { 0.0 };
         let max_height_from_space = ui.ctx().content_rect().bottom() - rect.bottom() - ui.spacing().window_margin.sum().y;
-        let content_height = ((self.rows.len() + footer_rows) as f32 * row_h).min(self.max_height).min(max_height_from_space);
+        let scroll_height = (self.rows.len() as f32 * row_h)
+            .min(self.max_height - footer_h)
+            .min(max_height_from_space - footer_h)
+            .max(row_h);
 
         let font_id = egui::TextStyle::Body.resolve(ui.style());
         let col_spacing = 8.0;
@@ -143,45 +147,77 @@ impl<'a> Dropdown<'a> {
             .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
             .show(|ui| {
                 ui.set_width(popup_width);
-                ui.set_min_height(content_height);
-                egui::ScrollArea::vertical().max_height(content_height).show(ui, |ui| {
-                    egui::Grid::new(self.id)
-                        .num_columns(num_cols)
-                        .spacing(egui::vec2(8.0, 2.0))
-                        .show(ui, |ui| {
-                            for (i, row) in self.rows.iter().enumerate() {
-                                for (ci, col) in row.cols.iter().enumerate() {
-                                    match col {
-                                        DropdownCol::Text(text) => {
-                                            if ci == 0 {
-                                                if ui.selectable_label(row.selected, text).clicked() {
-                                                    clicked_index = Some(i);
-                                                }
-                                            } else {
-                                                ui.add(egui::Label::new(text).truncate());
+                ui.set_min_height(scroll_height + footer_h);
+
+                // Manual table layout: egui's Grid solves column widths from the
+                // previous frame, which cannot be kept in sync with the frozen
+                // footer. Instead, every row — content and footer alike — places
+                // its cells at exact x-offsets derived from `col_widths`, so
+                // alignment is guaranteed by construction.
+                let cell_rect = |row_rect: egui::Rect, ci: usize| {
+                    let x = row_rect.left()
+                        + col_widths[..ci].iter().sum::<f32>()
+                        + col_spacing * ci as f32;
+                    egui::Rect::from_min_size(
+                        egui::pos2(x, row_rect.top()),
+                        egui::vec2(col_widths[ci], row_rect.height()),
+                    )
+                };
+                let cell_ui = |ui: &mut egui::Ui, rect: egui::Rect| {
+                    ui.new_child(
+                        egui::UiBuilder::new()
+                            .max_rect(rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    )
+                };
+
+                let row_cell_h = ui.spacing().interact_size.y;
+                egui::ScrollArea::vertical()
+                    .id_salt(self.id)
+                    .max_height(scroll_height)
+                    .show(ui, |ui| {
+                        ui.set_width(content_width);
+                        ui.spacing_mut().item_spacing.y = row_spacing;
+                        for (i, row) in self.rows.iter().enumerate() {
+                            let (row_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(content_width, row_cell_h),
+                                egui::Sense::hover(),
+                            );
+                            if !ui.is_rect_visible(row_rect) {
+                                continue;
+                            }
+                            for (ci, col) in row.cols.iter().enumerate() {
+                                let mut cell = cell_ui(ui, cell_rect(row_rect, ci));
+                                match col {
+                                    DropdownCol::Text(text) => {
+                                        if ci == 0 {
+                                            if cell.selectable_label(row.selected, text).clicked() {
+                                                clicked_index = Some(i);
                                             }
-                                        }
-                                        DropdownCol::FixedWidth(text, width) => {
-                                            let h = ui.text_style_height(&egui::TextStyle::Body);
-                                            ui.allocate_ui_with_layout(
-                                                egui::vec2(*width, h),
-                                                egui::Layout::left_to_right(egui::Align::Center),
-                                                |ui| { ui.label(text); },
-                                            );
+                                        } else {
+                                            cell.add(egui::Label::new(text).truncate());
                                         }
                                     }
+                                    DropdownCol::FixedWidth(text, _) => {
+                                        cell.label(text);
+                                    }
                                 }
-                                ui.end_row();
                             }
+                        }
+                    });
 
-                            if let Some(footer) = &self.footer {
-                                for (text, hover) in footer.iter().take(num_cols) {
-                                    ui.weak(text).on_hover_text(hover);
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
+                if let Some(footer) = &self.footer {
+                    ui.separator();
+                    let cell_h = ui.text_style_height(&egui::TextStyle::Body);
+                    let (row_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(content_width, cell_h),
+                        egui::Sense::hover(),
+                    );
+                    for (ci, (text, hover)) in footer.iter().enumerate().take(num_cols) {
+                        let mut cell = cell_ui(ui, cell_rect(row_rect, ci));
+                        cell.weak(text).on_hover_text(hover);
+                    }
+                }
             });
 
         clicked_index
