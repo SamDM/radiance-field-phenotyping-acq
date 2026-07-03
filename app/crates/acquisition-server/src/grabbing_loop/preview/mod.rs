@@ -276,7 +276,35 @@ pub(super) fn iteration(
                     }
                 })
             });
-            state.selected_name = candidate;
+            state.selected_name = candidate.clone();
+
+            // The trashed recording may have been the one actively replaying; if so,
+            // restart replay against the new selection (or stop it if none remains)
+            // rather than leaving a stale ReplayIterState pointing at deleted files.
+            if state.replay.is_some() {
+                let was_paused = state.replay.as_ref().map_or(false, |rs| rs.is_paused());
+                match candidate.as_deref().and_then(|name| state.recordings.find_by_name(name)) {
+                    Some(rec) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
+                        Ok(mut rs) => {
+                            if was_paused {
+                                rs.pause();
+                                let paths = rs.current_frame_paths().to_vec();
+                                replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                            }
+                            info!(name = %rec.name, "replay restarted after selected recording was trashed");
+                            state.replay = Some(rs);
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "replay restart failed after trash, stopping replay");
+                            state.replay = None;
+                        }
+                    },
+                    None => {
+                        info!("replay stopped: trashed recording had no remaining neighbor");
+                        state.replay = None;
+                    }
+                }
+            }
         }
     }
 

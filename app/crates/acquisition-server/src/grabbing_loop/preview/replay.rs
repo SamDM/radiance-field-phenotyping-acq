@@ -38,7 +38,7 @@ impl ReplayIterState {
         for entry in dir.flatten() {
             let entry_path = entry.path();
             let ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "png" && ext != "tiff" && ext != "tif" {
+            if ext != "png" && ext != "tiff" && ext != "tif" && ext != "jpg" && ext != "jpeg" {
                 continue;
             }
             let stem = match entry_path.file_stem().and_then(|s| s.to_str()) {
