@@ -100,7 +100,8 @@ impl RecordingsIterState {
         acquisition_common::recording_display_name(&folder.to_string_lossy(), &base)
     }
 
-    fn finish_recording(&mut self, start: OffsetDateTime, ok: bool, evt_tx: &broadcast::Sender<wire::ServerMessage>) {
+    /// Returns the recording's name if it was actually saved to the library.
+    fn finish_recording(&mut self, start: OffsetDateTime, ok: bool, evt_tx: &broadcast::Sender<wire::ServerMessage>) -> Option<String> {
         let folder = self.recording_folder(start);
         let name = self.recording_name(start);
         let elapsed = OffsetDateTime::now_utc() - start;
@@ -118,7 +119,7 @@ impl RecordingsIterState {
                 wire::NoticeSeverity::Warn,
                 "recording not saved: 0 frames captured".to_string(),
             ));
-            return;
+            return None;
         }
 
         let verified_ok = if ok {
@@ -153,7 +154,9 @@ impl RecordingsIterState {
             rating: None, comment: None,
         };
         write_metadata(&lr.path, &lr);
+        let name = lr.name.clone();
         self.library.push(lr);
+        Some(name)
     }
 }
 
@@ -167,20 +170,26 @@ pub(super) fn iteration(
     state: &mut RecordingsIterState,
     is_busy: bool,
     in_replay: bool,
+    selected_name: Option<&str>,
     zoom_requests: &HashMap<String, (f32, f32)>,
     evt_tx: &broadcast::Sender<wire::ServerMessage>,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
     enum RecordingCommand {
         Start,
         Stop,
     }
 
     enum MetadataCommand {
-        Trash { name: String },
-        Rate { name: String, rating: u8 },
-        Comment { name: String, comment: String },
+        Trash,
+        Rate { rating: u8 },
+        Comment { comment: String },
     }
+
+    // Name of the recording that finished (if any) this iteration, so the caller can
+    // auto-select it — otherwise a freshly stopped recording isn't selected server-side
+    // and the client has to re-click it before replay works.
+    let mut finished_recording: Option<String> = None;
 
     let mut recording_cmds: Vec<(Uuid, RecordingCommand)> = Vec::new();
     let mut metadata_cmds: Vec<(Uuid, MetadataCommand)> = Vec::new();
@@ -192,21 +201,21 @@ pub(super) fn iteration(
             wire::ClientCommand::StopRecording => {
                 recording_cmds.push((message.uuid, RecordingCommand::Stop));
             }
-            wire::ClientCommand::TrashRecording { name } => {
-                metadata_cmds.push((message.uuid, MetadataCommand::Trash { name: name.clone() }));
+            wire::ClientCommand::TrashRecording => {
+                metadata_cmds.push((message.uuid, MetadataCommand::Trash));
             }
-            wire::ClientCommand::RateRecording { name, rating } => {
-                metadata_cmds.push((message.uuid, MetadataCommand::Rate { name: name.clone(), rating: *rating }));
+            wire::ClientCommand::RateRecording { rating } => {
+                metadata_cmds.push((message.uuid, MetadataCommand::Rate { rating: *rating }));
             }
-            wire::ClientCommand::CommentRecording { name, comment } => {
-                metadata_cmds.push((message.uuid, MetadataCommand::Comment { name: name.clone(), comment: comment.clone() }));
+            wire::ClientCommand::CommentRecording { comment } => {
+                metadata_cmds.push((message.uuid, MetadataCommand::Comment { comment: comment.clone() }));
             }
             wire::ClientCommand::SetSensorCfg(_)
             | wire::ClientCommand::StartAutoAdjust { .. }
             | wire::ClientCommand::StopAutoAdjust
             | wire::ClientCommand::SetZoom { .. }
             | wire::ClientCommand::SelectRecording { .. }
-            | wire::ClientCommand::StartReplay { .. }
+            | wire::ClientCommand::StartReplay
             | wire::ClientCommand::StopReplay
             | wire::ClientCommand::PauseReplay
             | wire::ClientCommand::ResumeReplay
@@ -239,7 +248,7 @@ pub(super) fn iteration(
             }
             RecordingCommand::Stop => {
                 if let AcquisitionActivity::Recording { start, .. } = state.activity {
-                    state.finish_recording(start, true, evt_tx);
+                    finished_recording = state.finish_recording(start, true, evt_tx);
                     accept_cmd(evt_tx, cmd_uuid, "recording stopped");
                 } else {
                     reject_cmd(evt_tx, cmd_uuid, "stop ignored: not recording");
@@ -250,14 +259,15 @@ pub(super) fn iteration(
 
     for (cmd_uuid, meta_cmd) in metadata_cmds {
         match meta_cmd {
-            MetadataCommand::Trash { ref name } => {
-                if let Some(rec) = state.library.find_by_name(name) {
+            MetadataCommand::Trash => {
+                if let Some(rec) = selected_name.and_then(|name| state.library.find_by_name(name)) {
+                    let name = rec.name.clone();
                     let path = rec.path.clone();
                     let elapsed = rec.elapsed;
                     let groups_saved = rec.groups_saved;
                     match std::fs::remove_dir_all(&path) {
                         Ok(()) => {
-                            state.library.remove(name);
+                            state.library.remove(&name);
                             let total_secs = elapsed.whole_seconds();
                             let mins = total_secs / 60;
                             let secs = total_secs % 60;
@@ -279,10 +289,10 @@ pub(super) fn iteration(
                     reject_cmd(evt_tx, cmd_uuid, "no matching recording for metadata command");
                 }
             }
-            MetadataCommand::Rate { ref name, rating } => {
+            MetadataCommand::Rate { rating } => {
                 if !(1..=5).contains(&rating) {
                     reject_cmd(evt_tx, cmd_uuid, "invalid rating (must be 1-5)");
-                } else if let Some(lr) = state.library.find_by_name_mut(name) {
+                } else if let Some(lr) = selected_name.and_then(|name| state.library.find_by_name_mut(name)) {
                     lr.rating = Some(rating);
                     write_metadata(&lr.path, lr);
                     accept_cmd(evt_tx, cmd_uuid, &format!("rating set to {rating}"));
@@ -290,8 +300,8 @@ pub(super) fn iteration(
                     reject_cmd(evt_tx, cmd_uuid, "no matching recording for metadata command");
                 }
             }
-            MetadataCommand::Comment { ref name, ref comment } => {
-                if let Some(lr) = state.library.find_by_name_mut(name) {
+            MetadataCommand::Comment { ref comment } => {
+                if let Some(lr) = selected_name.and_then(|name| state.library.find_by_name_mut(name)) {
                     lr.comment = Some(comment.clone());
                     write_metadata(&lr.path, lr);
                     accept_cmd(evt_tx, cmd_uuid, "comment saved");
@@ -321,7 +331,7 @@ pub(super) fn iteration(
                     Err(e) => {
                         warn!(error = %e, "recording write failed, stopping recording");
                         if let AcquisitionActivity::Recording { start, .. } = state.activity {
-                            state.finish_recording(start, false, evt_tx);
+                            finished_recording = state.finish_recording(start, false, evt_tx);
                         }
                         let _ = evt_tx.send(wire::ServerMessage::notice(
                             wire::NoticeSeverity::Error,
@@ -337,7 +347,7 @@ pub(super) fn iteration(
                             "recording stopped (frame limit reached)"
                         );
                         if let AcquisitionActivity::Recording { start, .. } = state.activity {
-                            state.finish_recording(start, true, evt_tx);
+                            finished_recording = state.finish_recording(start, true, evt_tx);
                         }
                         let _ = evt_tx.send(wire::ServerMessage::notice(
                             wire::NoticeSeverity::Info,
@@ -370,7 +380,7 @@ pub(super) fn iteration(
         None => {}
     }
 
-    Ok(())
+    Ok(finished_recording)
 }
 
 /// Debayers `frame` to RGB and JPEG-compresses it with "SfM-safe" settings: high

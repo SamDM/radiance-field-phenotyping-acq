@@ -587,13 +587,12 @@ impl RecordingState {
             .show(ui)
     }
 
-    fn send_comment(&mut self, name: &str, cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>) {
+    fn send_comment(&mut self, cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>) {
         let cmd_uuid = Uuid::new_v4();
         self.pending_comment = Some(cmd_uuid);
         let _ = cmd_tx.send(ClientMessage {
             uuid: cmd_uuid,
             command: ClientCommand::CommentRecording {
-                name: name.to_string(),
                 comment: self.comment_text.clone(),
             },
         });
@@ -602,7 +601,6 @@ impl RecordingState {
     fn show_trash_and_stars(
         &mut self,
         ui: &mut egui::Ui,
-        name: &str,
         cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
     ) {
         let trash_pending = self.pending_trash.is_some();
@@ -618,7 +616,7 @@ impl RecordingState {
             self.pending_trash = Some(cmd_uuid);
             let _ = cmd_tx.send(ClientMessage {
                 uuid: cmd_uuid,
-                command: ClientCommand::TrashRecording { name: name.to_string() },
+                command: ClientCommand::TrashRecording,
             });
         }
 
@@ -648,10 +646,7 @@ impl RecordingState {
                 self.local_star_value = Some(i);
                 let _ = cmd_tx.send(ClientMessage {
                     uuid: cmd_uuid,
-                    command: ClientCommand::RateRecording {
-                        name: name.to_string(),
-                        rating: i,
-                    },
+                    command: ClientCommand::RateRecording { rating: i },
                 });
             }
         }
@@ -661,7 +656,6 @@ impl RecordingState {
     fn show_comment(
         &mut self,
         ui: &mut egui::Ui,
-        name: &str,
         cmd_tx: &tokio_mpsc::UnboundedSender<ClientMessage>,
     ) {
         let comment_pending = self.pending_comment.is_some();
@@ -675,7 +669,7 @@ impl RecordingState {
         );
         self.comment_focused = response.has_focus();
         if response.lost_focus() {
-            self.send_comment(name, cmd_tx);
+            self.send_comment(cmd_tx);
         }
     }
 
@@ -918,9 +912,7 @@ impl RecordingState {
                     let cmd_uuid = Uuid::new_v4();
                     self.pending_replay = Some(cmd_uuid);
                     let cmd = if want_replay {
-                        ClientCommand::StartReplay {
-                            name: selected.as_ref().map(|s| s.name.clone()).unwrap_or_default(),
-                        }
+                        ClientCommand::StartReplay
                     } else {
                         ClientCommand::StopReplay
                     };
@@ -929,9 +921,9 @@ impl RecordingState {
 
                 // Row 2, Col 2: trash ; stars
                 if !is_recording {
-                    if let Some(ref sel) = selected {
+                    if selected.is_some() {
                         ui.horizontal(|ui| {
-                            self.show_trash_and_stars(ui, &sel.name, cmd_tx);
+                            self.show_trash_and_stars(ui, cmd_tx);
                         });
                     } else {
                         ui.label("");
@@ -942,8 +934,8 @@ impl RecordingState {
 
                 // Row 2, Col 3: comment
                 if !is_recording {
-                    if let Some(ref sel) = selected {
-                        self.show_comment(ui, &sel.name, cmd_tx);
+                    if selected.is_some() {
+                        self.show_comment(ui, cmd_tx);
                     } else {
                         ui.label("");
                     }

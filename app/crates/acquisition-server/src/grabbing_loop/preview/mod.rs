@@ -125,7 +125,7 @@ pub(super) fn iteration(
                 }
                 let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
             }
-            wire::ClientCommand::StartReplay { name } => {
+            wire::ClientCommand::StartReplay => {
                 if state.recordings.is_recording() {
                     warn!("replay start rejected: recording in progress");
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(
@@ -134,11 +134,12 @@ pub(super) fn iteration(
                     ));
                     continue;
                 }
-                match state.recordings.find_by_name(name) {
-                    Some(rec) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
+                match state.selected_name.clone().and_then(|name| {
+                    state.recordings.find_by_name(&name).map(|rec| (name, rec))
+                }) {
+                    Some((name, rec)) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
                         Ok(rs) => {
                             state.replay = Some(rs);
-                            state.selected_name = Some(name.clone());
                             info!(name, "replay started");
                             let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                         }
@@ -150,7 +151,7 @@ pub(super) fn iteration(
                     None => {
                         let _ = evt_tx.send(wire::ServerMessage::ack_err(
                             message.uuid,
-                            "no matching recording".to_string(),
+                            "no recording selected".to_string(),
                         ));
                     }
                 }
@@ -250,16 +251,23 @@ pub(super) fn iteration(
 
     // Always drain the camera frame buffer, even during replay, to prevent
     // Pylon SDK buffer buildup that would add latency when live view resumes.
-    recordings::iteration(
+    let finished_recording = recordings::iteration(
         messages,
         camera_array,
         &mut state.recordings,
         is_busy,
         in_replay,
+        state.selected_name.as_deref(),
         &state.zoom_requests,
         evt_tx,
         preview_tx,
     )?;
+
+    // Auto-select a recording as soon as it finishes, so the client's replay
+    // toggle works immediately without the user having to re-select it first.
+    if let Some(name) = finished_recording {
+        state.selected_name = Some(name);
+    }
 
     // Finds the nearest still-existing neighbor of `name` in the pre-iteration name
     // order, used to pick a fallback when `name` was just trashed.

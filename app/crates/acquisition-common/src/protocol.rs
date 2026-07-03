@@ -25,7 +25,7 @@ pub enum ClientCommand {
     StopAutoAdjust,
     StartRecording,
     StopRecording,
-    StartReplay { name: String },
+    StartReplay,
     StopReplay,
     PauseReplay,
     ResumeReplay,
@@ -33,9 +33,9 @@ pub enum ClientCommand {
     StepReplayForward,
     StepReplayBackward,
     SeekReplayToFrame { frame_idx: u32 },
-    TrashRecording { name: String },
-    RateRecording { name: String, rating: u8 },
-    CommentRecording { name: String, comment: String },
+    TrashRecording,
+    RateRecording { rating: u8 },
+    CommentRecording { comment: String },
     SelectRecording { name: String },
     /// Request (or, with `position: None`, clear) a full-resolution zoom crop for a camera.
     /// `position` is the crosshair location in normalized [0,1] image coordinates.
