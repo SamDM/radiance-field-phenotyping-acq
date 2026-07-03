@@ -65,7 +65,7 @@ impl<'a> Dropdown<'a> {
             let visuals = if self.enabled {
                 ui.style().interact(&response)
             } else {
-                &ui.style().visuals.widgets.inactive
+                &ui.style().visuals.widgets.noninteractive
             };
             ui.painter().rect(rect, visuals.corner_radius, visuals.bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
 
