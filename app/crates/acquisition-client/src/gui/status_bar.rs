@@ -8,7 +8,7 @@ use super::{ConnectionAttempt, Timed};
 const NOTICE_DISPLAY_DURATION: Duration = Duration::from_secs(10);
 /// How long the background behind the latest notice flashes for after it
 /// arrives, to catch the eye before it settles into the plain display.
-const NOTICE_FLASH_DURATION: Duration = Duration::from_secs(2);
+const NOTICE_FLASH_DURATION: Duration = Duration::from_secs(1);
 
 enum Severity {
     Ok,
@@ -140,7 +140,10 @@ impl StatusBarState {
                 if elapsed < NOTICE_DISPLAY_DURATION {
                     if elapsed < NOTICE_FLASH_DURATION {
                         let bg = flash_color(&recent.value.severity, elapsed);
-                        egui::Frame::NONE.fill(bg).show(ui, |ui| notice_label(ui, recent));
+                        egui::Frame::NONE
+                            .fill(bg)
+                            .corner_radius(4.0)
+                            .show(ui, |ui| notice_label(ui, recent));
                         // Keep repainting so the flash animation actually plays.
                         ui.ctx().request_repaint();
                     } else {
