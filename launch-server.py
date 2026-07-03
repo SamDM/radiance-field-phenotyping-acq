@@ -14,6 +14,7 @@ try:
         #  "--auto-adjust-minimize-gain",
         #  "--auto-adjust-no-boost-framerate",
          "--frame-format", "png",
+        #  "--frame-format", "jpeg",
         ],
         env={**__import__("os").environ, "RUST_LOG": "info"},
     )
