@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use acquisition_common::debayer::debayer_crop;
 use acquisition_common::protocol as wire;
-use acquisition_common::{AnyFrame, Bayer, Frame};
+use acquisition_common::{AnyFrame, Bayer, Color, Frame};
 use image::imageops::FilterType;
 use image::RgbImage;
 use pylon::{CameraArray, GrabResult, PixelFormat};
@@ -530,76 +530,57 @@ pub(super) fn make_jpeg_previews(
     frames: &[AnyFrame],
     zoom_requests: &HashMap<String, (f32, f32)>,
 ) -> Vec<wire::PreviewFrame> {
-    let mut compressor = Compressor::new().expect("turbojpeg compressor");
-    compressor.set_quality(75).expect("set jpeg quality");
-    frames
-        .iter()
-        .map(|frame| {
-            let zoom = zoom_requests
-                .get(frame.camera_name())
-                .map(|&rel| extract_zoom(frame, rel));
-            let preview = make_preview(frame).into_color();
-            let jpeg = compressor
-                .compress_to_vec(Image {
-                    pixels: preview.data.as_slice(),
-                    width: preview.width as usize,
-                    pitch: preview.width as usize * 3,
-                    height: preview.height as usize,
-                    format: TjPixelFormat::RGB,
+    // Debayering and JPEG-encoding each camera's preview is independent work, so fan it
+    // out across scoped threads rather than doing it one camera after another.
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = frames
+            .iter()
+            .map(|frame| {
+                scope.spawn(move || {
+                    let zoom = zoom_requests
+                        .get(frame.camera_name())
+                        .map(|&rel| extract_zoom(frame, rel));
+                    let frame_small = resize_frame(&frame.clone().into_color());
+                    let mut compressor = Compressor::new().expect("turbojpeg compressor");
+                    compressor.set_quality(50).expect("set jpeg quality");
+                    let jpeg = compressor
+                        .compress_to_vec(Image {
+                            pixels: frame_small.data.as_slice(),
+                            width: frame_small.width as usize,
+                            pitch: frame_small.width as usize * 3,
+                            height: frame_small.height as usize,
+                            format: TjPixelFormat::RGB,
+                        })
+                        .expect("jpeg compression");
+                    wire::PreviewFrame {
+                        jpeg,
+                        width: frame_small.width,
+                        height: frame_small.height,
+                        camera_name: frame_small.camera_name,
+                        camera_timestamp_ns: frame_small.camera_timestamp_ns,
+                        host_timestamp: frame_small.host_timestamp,
+                        zoom,
+                    }
                 })
-                .expect("jpeg compression");
-            wire::PreviewFrame {
-                jpeg,
-                width: preview.width,
-                height: preview.height,
-                camera_name: preview.camera_name,
-                camera_timestamp_ns: preview.camera_timestamp_ns,
-                host_timestamp: preview.host_timestamp,
-                zoom,
-            }
-        })
-        .collect()
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    })
 }
 
-fn make_preview(frame: &AnyFrame) -> AnyFrame {
+fn resize_frame(frame: &Frame<Color>) -> Frame<Color> {
     const SCALE: u32 = 8;
     let w = (frame.width() / SCALE).max(1);
     let h = (frame.height() / SCALE).max(1);
-    match frame {
-        AnyFrame::Color(f) => {
-            let img = f.image();
-            AnyFrame::Color(Frame::new(
-                image::imageops::resize(&img, w, h, FilterType::Nearest).into_raw(),
-                w,
-                h,
-                f.camera_timestamp_ns,
-                f.host_timestamp,
-                f.camera_name.clone(),
-            ))
-        }
-        AnyFrame::Gray(f) => {
-            let img = f.image();
-            AnyFrame::Gray(Frame::new(
-                image::imageops::resize(&img, w, h, FilterType::Triangle).into_raw(),
-                w,
-                h,
-                f.camera_timestamp_ns,
-                f.host_timestamp,
-                f.camera_name.clone(),
-            ))
-        }
-        AnyFrame::Bayer(f) => {
-            let img = f.image();
-            AnyFrame::Gray(Frame::new(
-                image::imageops::resize(&img, w, h, FilterType::Triangle).into_raw(),
-                w,
-                h,
-                f.camera_timestamp_ns,
-                f.host_timestamp,
-                f.camera_name.clone(),
-            ))
-        }
-    }
+    let img = frame.image();
+    Frame::new(
+        image::imageops::resize(&img, w, h, FilterType::Triangle).into_raw(),
+        w,
+        h,
+        frame.camera_timestamp_ns,
+        frame.host_timestamp,
+        frame.camera_name.clone(),
+    )
 }
 
 fn bayer_frame_from_grab(grab: &GrabResult) -> Frame<Bayer> {
