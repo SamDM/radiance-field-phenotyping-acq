@@ -778,8 +778,20 @@ impl RecordingState {
                         };
 
                         if let Some((f, alpha)) = flash_pill.or(hover_pill) {
-                            let x0 = bar_rect.left() + (f as f32 / total_frames as f32) * bar_rect.width();
-                            let x1 = bar_rect.left() + ((f + 1) as f32 / total_frames as f32) * bar_rect.width();
+                            let mut x0 = bar_rect.left() + (f as f32 / total_frames as f32) * bar_rect.width();
+                            let mut x1 = bar_rect.left() + ((f + 1) as f32 / total_frames as f32) * bar_rect.width();
+                            // On long recordings a frame's span can shrink to sub-pixel width;
+                            // widen the pill around its center so it stays visible.
+                            let min_w = bar_rect.height() / 2.0;
+                            if x1 - x0 < min_w {
+                                let cx = (x0 + x1) / 2.0;
+                                x0 = (cx - min_w / 2.0).max(bar_rect.left());
+                                x1 = x0 + min_w;
+                                if x1 > bar_rect.right() {
+                                    x1 = bar_rect.right();
+                                    x0 = x1 - min_w;
+                                }
+                            }
                             let pill = egui::Rect::from_min_max(
                                 egui::pos2(x0, bar_rect.top()),
                                 egui::pos2(x1, bar_rect.bottom()),
