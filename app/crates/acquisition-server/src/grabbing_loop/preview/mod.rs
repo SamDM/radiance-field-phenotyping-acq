@@ -138,6 +138,7 @@ pub(super) fn iteration(
                     Some(rec) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
                         Ok(rs) => {
                             state.replay = Some(rs);
+                            state.selected_name = Some(name.clone());
                             info!(name, "replay started");
                             let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                         }
@@ -260,51 +261,63 @@ pub(super) fn iteration(
         preview_tx,
     )?;
 
+    // Finds the nearest still-existing neighbor of `name` in the pre-iteration name
+    // order, used to pick a fallback when `name` was just trashed.
+    let nearest_neighbor = |name: &str| -> Option<String> {
+        pre_names.iter().position(|n| n == name).and_then(|i| {
+            // Prefer the previous recording; fall back to what is now at the same index.
+            let prev = i.checked_sub(1).and_then(|j| pre_names.get(j));
+            let next = pre_names.get(i + 1);
+            (prev.or(next)).and_then(|name| {
+                if state.recordings.past_recordings().iter().any(|r| &r.name == name) {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+        })
+    };
+
     // If the selected recording was trashed, advance to the nearest remaining neighbor.
+    // (This is display-only bookkeeping for the dropdown; the actual replay engine
+    // below is keyed off its own name, since StartReplay can diverge from selected_name.)
     if let Some(ref sel) = state.selected_name.clone() {
         let still_exists = state.recordings.past_recordings().iter().any(|r| &r.name == sel);
         if !still_exists {
-            let candidate = pre_names.iter().position(|n| n == sel).and_then(|i| {
-                // Prefer the previous recording; fall back to what is now at the same index.
-                let prev = i.checked_sub(1).and_then(|j| pre_names.get(j));
-                let next = pre_names.get(i + 1);
-                (prev.or(next)).and_then(|name| {
-                    if state.recordings.past_recordings().iter().any(|r| &r.name == name) {
-                        Some(name.clone())
-                    } else {
-                        None
-                    }
-                })
-            });
-            state.selected_name = candidate.clone();
+            state.selected_name = nearest_neighbor(sel);
+        }
+    }
 
-            // The trashed recording may have been the one actively replaying; if so,
-            // restart replay against the new selection (or stop it if none remains)
-            // rather than leaving a stale ReplayIterState pointing at deleted files.
-            if state.replay.is_some() {
-                let was_paused = state.replay.as_ref().map_or(false, |rs| rs.is_paused());
-                match candidate.as_deref().and_then(|name| state.recordings.find_by_name(name)) {
-                    Some(rec) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
-                        Ok(mut rs) => {
-                            if was_paused {
-                                rs.pause();
-                                let paths = rs.current_frame_paths().to_vec();
-                                replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
-                            }
-                            info!(name = %rec.name, "replay restarted after selected recording was trashed");
-                            state.replay = Some(rs);
+    // If the recording actively being replayed was trashed, restart replay against the
+    // nearest neighbor (or stop it if none remains), rather than leaving a stale
+    // ReplayIterState pointing at deleted files.
+    if let Some(replaying_name) = state.replay.as_ref().map(|rs| rs.name().to_owned()) {
+        let still_exists = state.recordings.past_recordings().iter().any(|r| r.name == replaying_name);
+        if !still_exists {
+            let candidate = nearest_neighbor(&replaying_name);
+            let was_paused = state.replay.as_ref().map_or(false, |rs| rs.is_paused());
+            match candidate.as_deref().and_then(|name| state.recordings.find_by_name(name)) {
+                Some(rec) => match replay::ReplayIterState::new(&rec.path, &rec.name) {
+                    Ok(mut rs) => {
+                        if was_paused {
+                            rs.pause();
+                            let paths = rs.current_frame_paths().to_vec();
+                            replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
                         }
-                        Err(e) => {
-                            warn!(error = %e, "replay restart failed after trash, stopping replay");
-                            state.replay = None;
-                        }
-                    },
-                    None => {
-                        info!("replay stopped: trashed recording had no remaining neighbor");
+                        info!(name = %rec.name, "replay restarted after playing recording was trashed");
+                        state.replay = Some(rs);
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "replay restart failed after trash, stopping replay");
                         state.replay = None;
                     }
+                },
+                None => {
+                    info!("replay stopped: trashed recording had no remaining neighbor");
+                    state.replay = None;
                 }
             }
+            state.selected_name = candidate;
         }
     }
 
