@@ -503,11 +503,11 @@ impl RecordingState {
             .fill(btn_color)
             .enabled(!is_pending)
             .show(ui)
-            .on_hover_text("Press Spacebar to start/stop recording");
-        let space_pressed = !is_pending
+            .on_hover_text("Press Enter to start/stop recording");
+        let hotkey_pressed = !is_pending
             && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
-        response.clicked() || space_pressed
+            && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        response.clicked() || hotkey_pressed
     }
 
     fn show_recording_status(&self, ui: &mut egui::Ui, elapsed: &time::Duration, groups_saved: u32) {
@@ -712,9 +712,15 @@ impl RecordingState {
                 } else {
                     ClientCommand::PauseReplay
                 };
-                if ui.add_enabled(transport_free, egui::Button::new(play_pause_label).min_size(btn_size))
-                    .on_hover_text(if self.replay_paused { "Resume" } else { "Pause" }).clicked()
-                {
+                let play_pause_hover = if self.replay_paused { "Resume (Space)" } else { "Pause (Space)" };
+                let play_pause_clicked = ui
+                    .add_enabled(transport_free, egui::Button::new(play_pause_label).min_size(btn_size))
+                    .on_hover_text(play_pause_hover)
+                    .clicked();
+                let space_pressed = transport_free
+                    && !ui.ctx().egui_wants_keyboard_input()
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space));
+                if play_pause_clicked || space_pressed {
                     send_transport(play_pause_cmd);
                 }
                 if step_frame_button(ui, true, transport_free, "Next frame", btn_size).clicked() {
