@@ -44,6 +44,7 @@ pub fn run(
             args.output_dir.clone(),
             args.frames,
             args.frame_format,
+            args.zoom_size,
         ),
         prev_wire_status: None,
     };

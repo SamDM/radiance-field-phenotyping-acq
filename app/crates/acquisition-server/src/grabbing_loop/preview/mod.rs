@@ -13,6 +13,7 @@ pub(super) struct PreviewIterState {
     replay: Option<replay::ReplayIterState>,
     zoom_requests: HashMap<String, (f32, f32)>,
     selected_name: Option<String>,
+    zoom_size: u32,
 }
 
 impl PreviewIterState {
@@ -22,6 +23,7 @@ impl PreviewIterState {
         output_dir_template: String,
         max_n_frames: u32,
         frame_format: crate::FrameFormat,
+        zoom_size: u32,
     ) -> Self {
         PreviewIterState {
             recordings: recordings::RecordingsIterState::new(
@@ -30,10 +32,12 @@ impl PreviewIterState {
                 output_dir_template,
                 max_n_frames,
                 frame_format,
+                zoom_size,
             ),
             replay: None,
             zoom_requests: HashMap::new(),
             selected_name: None,
+            zoom_size,
         }
     }
 
@@ -88,7 +92,7 @@ pub(super) fn iteration(
                 if let Some(ref rs) = state.replay {
                     if rs.is_paused() {
                         let paths = rs.current_frame_paths().to_vec();
-                        replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                        replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     }
                 }
                 let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
@@ -106,7 +110,7 @@ pub(super) fn iteration(
                                     if was_paused {
                                         rs.pause();
                                         let paths = rs.current_frame_paths().to_vec();
-                                        replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                                        replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                                     }
                                     state.replay = Some(rs);
                                     info!(name, "replay restarted for new selection");
@@ -165,7 +169,7 @@ pub(super) fn iteration(
                 if let Some(ref mut rs) = state.replay {
                     rs.pause();
                     let paths = rs.current_frame_paths().to_vec();
-                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                 } else {
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
@@ -183,7 +187,7 @@ pub(super) fn iteration(
                 if let Some(ref mut rs) = state.replay {
                     rs.rewind();
                     let paths = rs.current_frame_paths().to_vec();
-                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                 } else {
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
@@ -192,7 +196,7 @@ pub(super) fn iteration(
             wire::ClientCommand::StepReplayForward => {
                 if let Some(ref mut rs) = state.replay {
                     let paths = rs.step_forward().to_vec();
-                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                 } else {
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
@@ -201,7 +205,7 @@ pub(super) fn iteration(
             wire::ClientCommand::StepReplayBackward => {
                 if let Some(ref mut rs) = state.replay {
                     let paths = rs.step_backward().to_vec();
-                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                 } else {
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
@@ -210,7 +214,7 @@ pub(super) fn iteration(
             wire::ClientCommand::SeekReplayToFrame { frame_idx } => {
                 if let Some(ref mut rs) = state.replay {
                     let paths = rs.seek_to_frame(*frame_idx).to_vec();
-                    replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                    replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     let _ = evt_tx.send(wire::ServerMessage::ack_ok(message.uuid));
                 } else {
                     let _ = evt_tx.send(wire::ServerMessage::ack_err(message.uuid, "not replaying".to_string()));
@@ -223,7 +227,7 @@ pub(super) fn iteration(
                 if let Some(ref rs) = state.replay {
                     if rs.is_paused() {
                         let paths = rs.current_frame_paths().to_vec();
-                        replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                        replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                     }
                 }
             }
@@ -310,7 +314,7 @@ pub(super) fn iteration(
                         if was_paused {
                             rs.pause();
                             let paths = rs.current_frame_paths().to_vec();
-                            replay::emit_frame(&paths, &state.zoom_requests, preview_tx);
+                            replay::emit_frame(&paths, &state.zoom_requests, state.zoom_size, preview_tx);
                         }
                         info!(name = %rec.name, "replay restarted after playing recording was trashed");
                         state.replay = Some(rs);
@@ -330,7 +334,7 @@ pub(super) fn iteration(
     }
 
     if let Some(ref mut rs) = state.replay {
-        replay::iteration(rs, &state.zoom_requests, preview_tx);
+        replay::iteration(rs, &state.zoom_requests, state.zoom_size, preview_tx);
     }
 
     Ok(())

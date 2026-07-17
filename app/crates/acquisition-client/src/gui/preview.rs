@@ -180,7 +180,10 @@ fn draw_zoom_inset(
     rel: egui::Vec2,
     zoom_tex: &egui::TextureHandle,
 ) {
-    let side = rect.width().min(rect.height()) / 3.0;
+    const ZOOM_PIXEL_SCALE: f32 = 3.0;
+    let native_side = zoom_tex.size()[0].max(zoom_tex.size()[1]) as f32;
+    let max_side = rect.width().min(rect.height()) / 2.0;
+    let side = (native_side * ZOOM_PIXEL_SCALE).min(max_side);
     let margin = 4.0;
     let min_x = if rel.x < 0.5 {
         rect.max.x - side - margin

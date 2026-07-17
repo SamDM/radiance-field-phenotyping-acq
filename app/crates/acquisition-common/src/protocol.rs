@@ -60,7 +60,7 @@ pub struct PreviewFrame {
     pub zoom: Option<Zoom>,
 }
 
-/// A 21×21 (or otherwise small) unscaled, debayered RGB crop centered on the crosshair.
+/// A 201×201 (or otherwise small) unscaled, debayered RGB crop centered on the crosshair.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Zoom {
     #[serde(with = "serde_rgb")]

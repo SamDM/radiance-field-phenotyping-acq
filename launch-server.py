@@ -15,6 +15,7 @@ try:
         #  "--auto-adjust-no-boost-framerate",
          "--frame-format", "png",
         #  "--frame-format", "jpeg",
+         "--zoom-size", "101",
         ],
         env={**__import__("os").environ, "RUST_LOG": "info"},
     )

@@ -205,6 +205,7 @@ impl ReplayIterState {
 pub(super) fn emit_frame(
     paths: &[PathBuf],
     zoom_requests: &HashMap<String, (f32, f32)>,
+    zoom_size: u32,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
 ) {
     let frames: Vec<AnyFrame> = paths
@@ -218,7 +219,7 @@ pub(super) fn emit_frame(
         })
         .collect();
     if !frames.is_empty() {
-        let previews = super::recordings::make_jpeg_previews(&frames, zoom_requests);
+        let previews = super::recordings::make_jpeg_previews(&frames, zoom_requests, zoom_size);
         let _ = preview_tx.send(previews);
     }
 }
@@ -228,6 +229,7 @@ pub(super) fn emit_frame(
 pub(super) fn iteration(
     state: &mut ReplayIterState,
     zoom_requests: &HashMap<String, (f32, f32)>,
+    zoom_size: u32,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
 ) {
     if state.paused || preview_tx.receiver_count() == 0 {
@@ -257,7 +259,7 @@ pub(super) fn iteration(
         .collect();
 
     if !frames.is_empty() {
-        let previews = super::recordings::make_jpeg_previews(&frames, zoom_requests);
+        let previews = super::recordings::make_jpeg_previews(&frames, zoom_requests, zoom_size);
         let _ = preview_tx.send(previews);
     }
 

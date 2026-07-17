@@ -19,6 +19,24 @@ const DEFAULT_AUTO_ADJUST_DURATION_SECS: u64 = 30;
 const DEFAULT_AUTO_ADJUST_MINIMIZE_GAIN: bool = false;
 const DEFAULT_AUTO_ADJUST_NO_BOOST_FRAMERATE: bool = false;
 const DEFAULT_FRAME_FORMAT: FrameFormat = FrameFormat::Tiff;
+const DEFAULT_ZOOM_SIZE: u32 = 101;
+const MIN_ZOOM_SIZE: u32 = 3;
+const MAX_ZOOM_SIZE: u32 = 999;
+
+/// Validates and normalizes `--zoom-size`: must be an integer in
+/// `[MIN_ZOOM_SIZE, MAX_ZOOM_SIZE]`; even values are rounded up by one so the crop
+/// is always symmetric around the zoomed pixel.
+fn parse_zoom_size(s: &str) -> Result<u32, String> {
+    let value: u32 = s
+        .parse()
+        .map_err(|_| format!("`{s}` is not a valid non-negative integer"))?;
+    if !(MIN_ZOOM_SIZE..=MAX_ZOOM_SIZE).contains(&value) {
+        return Err(format!(
+            "zoom size must be between {MIN_ZOOM_SIZE} and {MAX_ZOOM_SIZE} (got {value})"
+        ));
+    }
+    Ok(value + (value % 2 == 0) as u32)
+}
 
 /// On-disk container format for recorded frames.
 ///
@@ -136,6 +154,39 @@ pub struct Args {
     /// Bind address for the preview WebSocket (server → client frame metadata).
     #[arg(long, default_value = DEFAULT_PREVIEW_ADDR)]
     pub preview_addr: std::net::SocketAddr,
+
+    /// Side length (pixels) of the zoomed preview crop shown around the crosshair.
+    /// Must be between 3 and 999; even values are rounded up by one to keep the
+    /// crop symmetric around the zoomed pixel.
+    #[arg(long, default_value_t = DEFAULT_ZOOM_SIZE, value_parser = parse_zoom_size)]
+    pub zoom_size: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_zoom_size;
+
+    #[test]
+    fn even_values_round_up_to_odd() {
+        assert_eq!(parse_zoom_size("100").unwrap(), 101);
+        assert_eq!(parse_zoom_size("4").unwrap(), 5);
+    }
+
+    #[test]
+    fn odd_values_pass_through() {
+        assert_eq!(parse_zoom_size("101").unwrap(), 101);
+        assert_eq!(parse_zoom_size("3").unwrap(), 3);
+        assert_eq!(parse_zoom_size("999").unwrap(), 999);
+    }
+
+    #[test]
+    fn rejects_unreasonable_values() {
+        assert!(parse_zoom_size("-10").is_err());
+        assert!(parse_zoom_size("foo").is_err());
+        assert!(parse_zoom_size("3.2").is_err());
+        assert!(parse_zoom_size("1").is_err());
+        assert!(parse_zoom_size("1000000").is_err());
+    }
 }
 
 #[tokio::main]

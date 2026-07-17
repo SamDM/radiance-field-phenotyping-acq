@@ -45,6 +45,7 @@ pub(super) struct RecordingsIterState {
     max_n_frames: u32,
     library: library::RecordingLibrary,
     frame_format: crate::FrameFormat,
+    zoom_size: u32,
 }
 
 impl RecordingsIterState {
@@ -54,6 +55,7 @@ impl RecordingsIterState {
         output_dir_template: String,
         max_n_frames: u32,
         frame_format: crate::FrameFormat,
+        zoom_size: u32,
     ) -> Self {
         let library = library::RecordingLibrary::new(&output_dir_template);
         RecordingsIterState {
@@ -64,6 +66,7 @@ impl RecordingsIterState {
             max_n_frames,
             library,
             frame_format,
+            zoom_size,
         }
     }
 
@@ -326,6 +329,7 @@ pub(super) fn iteration(
                     zoom_requests,
                     preview_tx,
                     state.frame_format,
+                    state.zoom_size,
                 ) {
                     Ok(s) => s,
                     Err(e) => {
@@ -416,6 +420,7 @@ fn process_grouped_frames_result(
     zoom_requests: &HashMap<String, (f32, f32)>,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
     frame_format: crate::FrameFormat,
+    zoom_size: u32,
 ) -> Result<Option<u32>, Box<dyn std::error::Error>> {
     match result {
         Ok(group) => {
@@ -429,7 +434,7 @@ fn process_grouped_frames_result(
                 .collect();
 
             if !in_replay {
-                let previews = make_jpeg_previews(&frames, zoom_requests);
+                let previews = make_jpeg_previews(&frames, zoom_requests, zoom_size);
                 let _ = preview_tx.send(previews);
             }
 
@@ -494,12 +499,11 @@ fn process_grouped_frames_result(
     Ok(None)
 }
 
-pub(super) fn extract_zoom(frame: &AnyFrame, rel: (f32, f32)) -> wire::Zoom {
-    const ZOOM_SIZE: u32 = 51;
+pub(super) fn extract_zoom(frame: &AnyFrame, rel: (f32, f32), zoom_size: u32) -> wire::Zoom {
     let w = frame.width();
     let h = frame.height();
-    let cw = ZOOM_SIZE.min(w);
-    let ch = ZOOM_SIZE.min(h);
+    let cw = zoom_size.min(w);
+    let ch = zoom_size.min(h);
     let cx = (rel.0 * w as f32).round().clamp(0.0, (w - 1) as f32) as u32;
     let cy = (rel.1 * h as f32).round().clamp(0.0, (h - 1) as f32) as u32;
     let x0 = cx.saturating_sub(cw / 2).min(w - cw);
@@ -539,6 +543,7 @@ pub(super) fn extract_zoom(frame: &AnyFrame, rel: (f32, f32)) -> wire::Zoom {
 pub(super) fn make_jpeg_previews(
     frames: &[AnyFrame],
     zoom_requests: &HashMap<String, (f32, f32)>,
+    zoom_size: u32,
 ) -> Vec<wire::PreviewFrame> {
     // Debayering and JPEG-encoding each camera's preview is independent work, so fan it
     // out across scoped threads rather than doing it one camera after another.
@@ -549,7 +554,7 @@ pub(super) fn make_jpeg_previews(
                 scope.spawn(move || {
                     let zoom = zoom_requests
                         .get(frame.camera_name())
-                        .map(|&rel| extract_zoom(frame, rel));
+                        .map(|&rel| extract_zoom(frame, rel, zoom_size));
                     let frame_small = resize_frame(&frame.clone().into_color());
                     let mut compressor = Compressor::new().expect("turbojpeg compressor");
                     compressor.set_quality(50).expect("set jpeg quality");
