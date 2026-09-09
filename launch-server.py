@@ -7,6 +7,8 @@ try:
         ["cargo", "run", "--manifest-path", "app/Cargo.toml",
          "-p", "acquisition-server", "--release",
          "--",
+         "--control-addr", "0.0.0.0:8081",
+         "--preview-addr", "0.0.0.0:8082",
          "--n-cameras", "2",
          "--frames", "500",
          "--framerate", "3.0",

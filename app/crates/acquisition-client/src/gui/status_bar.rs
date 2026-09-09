@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use acquisition_common::protocol::{CameraPtpStatus, Notice, NoticeSeverity, Ptp4lStatus, PtpStatusReport};
+use acquisition_common::protocol::{
+    CameraPtpStatus, CameraServoStatus, Notice, NoticeSeverity, Ptp4lStatus, PtpStatusReport,
+};
 use eframe::egui;
 
 use super::{ConnectionAttempt, Timed};
@@ -109,7 +111,12 @@ impl StatusBarState {
                                     } else {
                                         Severity::Warn
                                     };
-                                    status_dot(ui, severity, &format!("Camera {i} PTP"));
+                                    let lock_icon = if camera.servo == CameraServoStatus::Locked {
+                                        "🔒"
+                                    } else {
+                                        "🔓"
+                                    };
+                                    status_dot(ui, severity, &format!("Camera {i} PTP {lock_icon}"));
                                 }
                             }
                         }
