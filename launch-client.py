@@ -7,8 +7,8 @@ try:
         ["cargo", "run", "--manifest-path", "app/Cargo.toml",
          "-p", "acquisition-client", "--release",
          "--",
-         "--control-url", "ws://127.0.0.1:8081",
-         "--preview-url", "ws://127.0.0.1:8082",
+         "--control-url", "ws://phenominator:8081",
+         "--preview-url", "ws://phenominator:8082",
         ],
         env={**__import__("os").environ, "RUST_LOG": "info"},
     )

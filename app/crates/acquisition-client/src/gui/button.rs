@@ -202,7 +202,7 @@ impl<'a> TrashLockButton<'a> {
                     egui::pos2(connector_rect.left(), mid_y),
                     egui::pos2(connector_rect.right(), mid_y),
                 ],
-                egui::Stroke::new(2.0, connector_color),
+                egui::Stroke::new(2.0_f32, connector_color),
             );
 
             // ---- lock button ----

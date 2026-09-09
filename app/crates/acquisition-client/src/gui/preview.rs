@@ -169,7 +169,7 @@ fn format_camera_timestamp(timestamp: &OffsetDateTime) -> String {
 fn draw_crosshairs(painter: &egui::Painter, rect: egui::Rect, rel: egui::Vec2, color: egui::Color32) {
     let x = rect.min.x + rel.x * rect.width();
     let y = rect.min.y + rel.y * rect.height();
-    let stroke = egui::Stroke::new(1.0, color);
+    let stroke = egui::Stroke::new(1.0_f32, color);
     painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], stroke);
     painter.line_segment([egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)], stroke);
 }
@@ -205,7 +205,7 @@ fn draw_zoom_inset(
     painter.rect_stroke(
         inset_rect,
         egui::CornerRadius::ZERO,
-        egui::Stroke::new(1.0, egui::Color32::RED),
+        egui::Stroke::new(1.0_f32, egui::Color32::RED),
         egui::StrokeKind::Inside,
     );
 }
