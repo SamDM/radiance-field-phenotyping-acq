@@ -328,7 +328,7 @@ impl Args {
         if a.aruco_stop_after == 0 {
             return Err("--aruco-stop-after must be at least 1".to_string());
         }
-        if a.aruco_thresh_win < 3 || a.aruco_thresh_win % 2 == 0 {
+        if a.aruco_thresh_win < 3 || a.aruco_thresh_win.is_multiple_of(2) {
             return Err(format!(
                 "--aruco-thresh-win must be an odd number >= 3 (got {})",
                 a.aruco_thresh_win

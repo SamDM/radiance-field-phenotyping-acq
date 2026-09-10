@@ -36,6 +36,9 @@ mod trigger;
 #[cfg(feature = "aruco-auto-record")]
 mod worker;
 
+#[cfg(all(test, feature = "aruco-auto-record"))]
+mod e2e_tests;
+
 #[cfg(feature = "aruco-auto-record")]
 pub use imp::AutoRecordWatcher;
 
