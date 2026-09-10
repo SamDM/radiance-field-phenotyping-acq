@@ -7,6 +7,16 @@
 use std::time::Duration;
 
 /// Which Bayer-to-grayscale reduction to feed the detector.
+///
+/// `Green` is the default for two measured reasons (see `examples/aruco_bench.rs`). It is
+/// ~20× cheaper — 0.3 ms against 6 ms on the rig's sensor — and that cost lands on the
+/// *acquisition* thread, while detection itself runs on the worker; box mode therefore
+/// spends more on the thread that matters than the whole detection does on the one that
+/// does not. And below roughly 14 px of marker it also detects *better*, because at
+/// extreme downscale averaging blurs adjacent modules into each other.
+///
+/// `Box` remains worth trying for noisy low-light scenes, where averaging suppresses shot
+/// noise, or if aliasing turns out to cost detections on real imagery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum DownscaleMode {
     /// One green site per quad. One byte read per output pixel; aliases hard edges.

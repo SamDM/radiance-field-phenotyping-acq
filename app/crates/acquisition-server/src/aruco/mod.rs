@@ -89,8 +89,18 @@ pub struct PollCtx {
 }
 
 /// Default minimum gap between detector dispatches.
-pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
+///
+/// Measured by `examples/aruco_bench.rs`, a detection at the default downscale costs
+/// ~5 ms — around twenty times cheaper than this feature was sized for. At the rig's 2 fps
+/// each camera only produces a frame every 500 ms anyway, so a floor anywhere below that
+/// stops being the binding constraint and lets frame arrival set the pace, which is the
+/// cheapest way to cut start latency. The floor still earns its keep at high frame rates:
+/// even at 5 dispatches per second this is under 3% of one core.
+pub const DEFAULT_INTERVAL: Duration = Duration::from_millis(200);
 /// Default quad stride for the Bayer downscale; output is `w/(2k)` × `h/(2k)`.
+///
+/// On the rig's 3536×2748 sensor this gives the detector 589×458. See
+/// [`DEFAULT_DOWNSCALE`]'s bench for how large the marker then has to be.
 pub const DEFAULT_DOWNSCALE: u32 = 3;
 /// Default `K` of the K-of-N start hysteresis.
 pub const DEFAULT_CONFIRMATIONS: u8 = 2;

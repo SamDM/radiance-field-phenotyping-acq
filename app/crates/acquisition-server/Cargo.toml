@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "acquisition-server"
 path = "src/main.rs"
 
+[[example]]
+name = "aruco_bench"
+required-features = ["aruco-auto-record"]
+
 [features]
 default = []
 # Auto-start/stop recordings when configured ArUco markers come into view.
