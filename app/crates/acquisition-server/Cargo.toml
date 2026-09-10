@@ -11,6 +11,12 @@ path = "src/lib.rs"
 name = "acquisition-server"
 path = "src/main.rs"
 
+[features]
+default = []
+# Auto-start/stop recordings when configured ArUco markers come into view.
+# Off by default: it pulls in the arucotools git dependency and spawns a detector thread.
+aruco-auto-record = ["dep:arucotools"]
+
 [dependencies]
 acquisition-common = { path = "../acquisition-common" }
 pylon = { path = "../pylon" }
@@ -27,3 +33,4 @@ futures-util = { workspace = true }
 postcard = { workspace = true }
 uuid = { workspace = true }
 turbojpeg = { workspace = true }
+arucotools = { workspace = true, optional = true }

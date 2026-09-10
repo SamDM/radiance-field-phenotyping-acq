@@ -19,4 +19,8 @@ png = "0.18"
 turbojpeg = "1"
 rayon = "1"
 uuid = { version = "1.23.1", features = [ "v4", "serde"] }
+# Pinned to a rev rather than tracking a branch: the crate is alpha and its README warns
+# that breaking API changes are expected. Only pulled in by the `aruco-auto-record`
+# feature of acquisition-server.
+arucotools = { git = "ssh://git@gitlab.psb.ugent.be/samey/arucotools-rs.git", rev = "fdf2ad93a01a6641b63b2467e81990d36a860ae4", default-features = false }
  

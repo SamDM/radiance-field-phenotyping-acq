@@ -1,4 +1,5 @@
 pub mod debayer;
+pub mod downscale;
 pub mod frame;
 pub mod pixel;
 pub mod protocol;
