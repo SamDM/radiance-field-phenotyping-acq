@@ -118,6 +118,22 @@ pub struct Args {
     #[arg(long)]
     pub n_cameras: usize,
 
+    /// Free-run the cameras instead of triggering them off the PTP-synchronized
+    /// periodic signal. Falls back to pacing acquisition with the
+    /// `AcquisitionFrameRate` limiter, so captures are not simultaneous across
+    /// cameras. The server also falls back to this on its own if a camera does not
+    /// support the periodic signal; this flag forces it, which is the only way to
+    /// exercise that path on hardware that does support it.
+    #[arg(long, default_value_t = false)]
+    pub no_sync_trigger: bool,
+
+    /// Do not enable PTP: skip spawning `ptp4l` and switch `PtpEnable` off on every
+    /// camera. Camera clocks free-run, so captures are not simultaneous even when the
+    /// periodic-signal trigger is active — it still paces both cameras at the
+    /// requested rate, just off each camera's own clock.
+    #[arg(long, default_value_t = false)]
+    pub no_ptp: bool,
+
     /// Frame grouper patience (i.e. per camera stream buffer length)
     #[arg(long, default_value_t = DEFAULT_GROUPER_BUFFER_LEN)]
     pub grouper_buffer_len: usize,

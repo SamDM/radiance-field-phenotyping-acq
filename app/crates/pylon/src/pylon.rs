@@ -102,7 +102,7 @@ impl PixelFormat {
 }
 
 use cxx::UniquePtr;
-use std::marker::PhantomData;
+use std::cell::Cell;
 use time::{OffsetDateTime, UtcDateTime};
 use tracing::trace;
 
@@ -123,7 +123,13 @@ impl DeviceInfo {
     }
 }
 
-pub struct Camera<'a>(UniquePtr<ffi::Camera>, PhantomData<&'a CameraArray>);
+pub struct Camera<'a>(UniquePtr<ffi::Camera>, &'a Cell<bool>);
+
+impl Drop for Camera<'_> {
+    fn drop(&mut self) {
+        self.1.set(false);
+    }
+}
 
 impl<'a> Camera<'a> {
     pub fn set_feature(&mut self, name: &str, value: &str) -> Result<(), cxx::Exception> {
@@ -150,7 +156,35 @@ impl<'a> Camera<'a> {
     }
 }
 
-pub struct CameraArray(UniquePtr<ffi::CameraArray>);
+pub struct CameraArray(UniquePtr<ffi::CameraArray>, Vec<Cell<bool>>);
+
+#[derive(Debug)]
+pub enum CameraAccessError {
+    /// A [`Camera`] handle for this index is already checked out (still alive somewhere
+    /// else). Holding two live handles to the same physical camera would let one invalidate
+    /// GenICam register state (e.g. a PTP latch) the other is relying on.
+    CheckedOut { index: usize },
+    /// `index` is not a valid camera index for this array.
+    IndexOutOfBounds { index: usize, len: usize },
+}
+
+impl std::fmt::Display for CameraAccessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CheckedOut { index } => write!(
+                f,
+                "camera {index} is already checked out (a Camera handle for this index is still alive elsewhere — \
+                 holding two handles to the same physical camera would let one invalidate GenICam register state, \
+                 e.g. a PTP latch, the other relies on)"
+            ),
+            Self::IndexOutOfBounds { index, len } => {
+                write!(f, "camera index {index} out of bounds (array has {len} camera(s), valid indices are 0..{len})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CameraAccessError {}
 
 // TODO: pre-allocate `ffi::Camera` instances?
 // I often create and destroy them for one-off operations.
@@ -158,7 +192,7 @@ pub struct CameraArray(UniquePtr<ffi::CameraArray>);
 // because then `get_camera` can return a reference tied to self.
 impl CameraArray {
     pub fn new(n: usize) -> Self {
-        Self(ffi::new_camera_array(n))
+        Self(ffi::new_camera_array(n), (0..n).map(|_| Cell::new(false)).collect())
     }
     pub fn open(&mut self) {
         self.0.pin_mut().open();
@@ -178,9 +212,31 @@ impl CameraArray {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    /// Checks out a handle to the camera at `index`.
+    ///
+    /// Panics if `index` is out of bounds, or if a handle for this index is already
+    /// checked out (i.e. still alive somewhere else) — both are programming bugs, not
+    /// recoverable runtime conditions, matching `RefCell`'s `borrow_mut` behavior. Use
+    /// [`Self::try_get_camera`] if you need to handle either case instead of panicking.
     pub fn get_camera(&self, index: usize) -> Camera<'_> {
-        Camera(self.0.get_camera(index), PhantomData)
+        self.try_get_camera(index).unwrap_or_else(|e| panic!("{e}"))
     }
+
+    /// Like [`Self::get_camera`], but returns an error instead of panicking if `index` is
+    /// out of bounds or a handle for this index is already checked out.
+    pub fn try_get_camera(&self, index: usize) -> Result<Camera<'_>, CameraAccessError> {
+        let checked_out = self.1.get(index).ok_or(CameraAccessError::IndexOutOfBounds {
+            index,
+            len: self.1.len(),
+        })?;
+        if checked_out.replace(true) {
+            return Err(CameraAccessError::CheckedOut { index });
+        }
+        Ok(Camera(self.0.get_camera(index), checked_out))
+    }
+    /// Takes `&mut self`, so the borrow checker guarantees no `Camera` handle (for any
+    /// index) is alive during the call — necessary because a result may come from any
+    /// camera in the array, not just one known in advance.
     pub fn retrieve_result(&mut self, timeout_ms: u32) -> Option<Result<GrabResult, GrabError>> {
         let result = self.0.pin_mut().retrieve_result(timeout_ms);
         if result.is_null() {

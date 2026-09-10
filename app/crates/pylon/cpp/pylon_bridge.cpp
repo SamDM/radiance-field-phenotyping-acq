@@ -182,16 +182,51 @@ void Camera::set_feature(rust::Str name, rust::Str value) {
 
 rust::String Camera::get_feature(rust::Str name) const {
     std::string n(name);
-    GenApi::CValuePtr val(m_impl->camera->GetNodeMap().GetNode(n.c_str()));
-    if (!val.IsValid()) throw std::runtime_error("unknown or non-value feature: " + n);
-    return rust::String(val->ToString().c_str());
+    std::string exc_msg;
+    std::string result;
+    {
+        // Nested scope: see set_feature. Reading a node that is merely unavailable
+        // (e.g. PtpStatus while PTP is off) throws, and CValuePtr's destructor can
+        // throw too — unwinding through both aborts the process.
+        GenApi::CValuePtr val(m_impl->camera->GetNodeMap().GetNode(n.c_str()));
+        if (!val.IsValid()) {
+            exc_msg = "unknown or non-value feature: " + n;
+        } else {
+            try {
+                result = val->ToString().c_str();
+            } catch (const std::exception& e) {
+                exc_msg = "reading feature '" + n + "': " + e.what();
+            } catch (...) {
+                exc_msg = "reading feature '" + n + "': unknown exception";
+            }
+        }
+    }
+    if (!exc_msg.empty()) throw std::runtime_error(exc_msg);
+    return rust::String(result);
 }
 
 void Camera::execute_command(rust::Str name) {
     std::string n(name);
-    GenApi::CCommandPtr cmd(m_impl->camera->GetNodeMap().GetNode(n.c_str()));
-    if (!cmd.IsValid()) throw std::runtime_error("not a command node: " + n);
-    cmd->Execute();
+    std::string exc_msg;
+    {
+        // Nested scope: see set_feature. Executing a command that is unavailable in
+        // the current camera state (e.g. PtpDataSetLatch while PTP is off) throws,
+        // and CCommandPtr's destructor can throw too — without this scope the two
+        // unwind together and std::terminate aborts the process.
+        GenApi::CCommandPtr cmd(m_impl->camera->GetNodeMap().GetNode(n.c_str()));
+        if (!cmd.IsValid()) {
+            exc_msg = "not a command node: " + n;
+        } else {
+            try {
+                cmd->Execute();
+            } catch (const std::exception& e) {
+                exc_msg = "executing command '" + n + "': " + e.what();
+            } catch (...) {
+                exc_msg = "executing command '" + n + "': unknown exception";
+            }
+        }
+    }
+    if (!exc_msg.empty()) throw std::runtime_error(exc_msg);
 }
 
 void Camera::load_config_file(rust::Str path) {

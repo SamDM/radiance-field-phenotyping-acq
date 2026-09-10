@@ -36,11 +36,17 @@ sudo apt install cmake nasm
 
 ## On-camera debayering (not viable)
 
-The a2A3536-9gcBAS has a 1 GigE interface (~125 MB/s). At full resolution
-(3536×2448), an RGB8 frame is ~26 MB, so 9 fps would require ~234 MB/s —
-nearly double the link capacity. Frames arrive incomplete and are dropped
-by Pylon's stream grabber. BayerRG8 works because it is 1 byte/pixel
-(~78 MB/s at 9 fps). **Debayering must be done on the host.**
+The a2A3536-9gcBAS has a 1 GigE interface (~125 MB/s) and a **square** sensor:
+`SensorWidth` 3548 × `SensorHeight` 3552, with the default ROI at 3536×3536, so
+a frame is 12.5 MP rather than the 8.7 MP a 4:3 reading of the model number
+would suggest. At that size an RGB8 frame is ~37.5 MB, so 9 fps would require
+~338 MB/s — roughly 2.7× the link capacity. Frames arrive incomplete and are
+dropped by Pylon's stream grabber. **Debayering must be done on the host.**
+
+BayerRG8 is 1 byte/pixel, so 12.5 MB/frame: fine at the 2-3 fps this rig runs
+(~37.5 MB/s at 3 fps, confirmed by `BslDeviceLinkCurrentThroughput` reading
+~37.9 MB/s), but ~113 MB/s at 9 fps, which is about 90% of the link and leaves
+very little headroom.
 
 Lowering the framerate to 2 fps via `AcquisitionFrameRate` does not help either —
 frames are still incompletely grabbed. The bottleneck appears to be burst behaviour
@@ -51,16 +57,60 @@ The `--debayer` CLI flag and the associated `PixelFormat`/`DemosaicingMethod`/
 
 ## Auto-tuning camera whitebalance/gain/exposure
 
-Auto-tuning of camera whitebalance, gain and exposure... <br>
+Auto-tuning of camera whitebalance, gain and exposure runs automatically at
+startup; there is no flag to request it. <br>
 Here, PTP is disabled such that the cameras start up faster,
 but auto-tuning is compatible with PTP syncing.
 
 ```bash
-cargo run --manifest-path app/Cargo.toml -p acquisition-server -- --frames 5 --no-ptp --auto-adjust
+cargo run --manifest-path app/Cargo.toml -p acquisition-server -- --frames 5 --no-ptp
 
 # with debugging
-RUST_LOG=debug cargo run --manifest-path app/Cargo.toml -p acquisition-server -- --frames 5 --no-ptp --auto-adjust
+RUST_LOG=debug cargo run --manifest-path app/Cargo.toml -p acquisition-server -- --frames 5 --no-ptp
 ```
+
+## Synchronized triggering
+
+By default the cameras do not free-run: they expose on a shared trigger grid derived
+from their PTP-disciplined clocks (Basler's Periodic Signal feature, no I/O cabling
+needed). Measured cross-camera agreement on this rig is within ~1 µs of the frame
+timestamps, against ~3 ms when free-running.
+
+Two independent axes control this, each with its own opt-out:
+
+|                          | PTP locked          | PTP enabled, not locked | `--no-ptp`         |
+| ------------------------ | ------------------- | ----------------------- | ------------------ |
+| default                  | period, **synced**  | period, unsynced        | period, unsynced   |
+| `--no-sync-trigger`      | limiter, unsynced   | limiter, unsynced       | limiter, unsynced  |
+
+- **`--no-sync-trigger`** free-runs the cameras on the `AcquisitionFrameRate` limiter
+  (the pre-existing behaviour). The server falls back to this on its own if a camera
+  does not support the periodic signal; the flag forces it, which is the only way to
+  exercise that path on hardware that does support it.
+- **`--no-ptp`** skips `ptp4l` and switches `PtpEnable` off on every camera. The
+  trigger still paces both cameras at the requested rate, just off each camera's own
+  free-running clock.
+
+Which feature owns the frame rate depends only on the trigger axis, never on PTP:
+losing PTP lock costs synchronization, never rate control.
+
+Note the periodic signal quantizes the period to whole microseconds and caps it at
+1 s, so **the minimum rate is 1 fps** (below that the request is clamped) and 3 fps
+is realized as 3.000003 fps. The server reports the realized rate back to the client.
+Under `--no-sync-trigger` the limiter's full 0.2 fps range is available again.
+
+### Reading the PTP status
+
+The client status bar shows, per camera, the PTP role, a servo lock icon, a `⇄`
+sync indicator and the clock offset from the grand master. Captures are only
+genuinely simultaneous when the trigger runs off the PTP clock **and** the servo is
+locked — the signal source flips to `PtpClock` the moment PTP is enabled, tens of
+seconds before the clock actually settles.
+
+The offset matters because it, not the frame timestamps, bounds true simultaneity:
+timestamps are measured on the very clocks that are off, so they look better aligned
+than the captures really are. Note also that `PtpServoStatus == Locked` only promises
+agreement within `BslPtpServoLockedThreshold`, which defaults to 50 µs.
 
 # NUC to Laptop Direct Ethernet Connection (Point-to-Point)
 
