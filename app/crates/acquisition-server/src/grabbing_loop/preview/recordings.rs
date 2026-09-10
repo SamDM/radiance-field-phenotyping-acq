@@ -433,7 +433,12 @@ fn process_grouped_frames_result(
                 .map(|(f, _ts)| f.into_any())
                 .collect();
 
-            if !in_replay {
+            // Debayering and JPEG-encoding a preview nobody is subscribed to is pure
+            // waste, and it runs on the acquisition thread — the same thread driving
+            // `retrieve_result` — so it costs frame rate for nothing. An unattended rig
+            // has no preview client for hours at a stretch. The replay path already
+            // guards on `receiver_count` for the same reason.
+            if !in_replay && preview_tx.receiver_count() > 0 {
                 let previews = make_jpeg_previews(&frames, zoom_requests, zoom_size);
                 let _ = preview_tx.send(previews);
             }
