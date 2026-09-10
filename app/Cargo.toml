@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pylon", "crates/acquisition-common", "crates/acquisition-server", "crates/acquisition-client"]
+members = ["crates/pylon", "crates/acquisition-common", "crates/acquisition-server", "crates/acquisition-client", "crates/sync-analysis"]
 resolver = "3"
 
 [workspace.dependencies]

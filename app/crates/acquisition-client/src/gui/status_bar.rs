@@ -1,7 +1,8 @@
 use std::time::Duration;
 
 use acquisition_common::protocol::{
-    CameraPtpStatus, CameraServoStatus, Notice, NoticeSeverity, Ptp4lStatus, PtpStatusReport,
+    CameraPtpStatus, CameraServoStatus, Notice, NoticeSeverity, PeriodicSignalSource,
+    Ptp4lStatus, PtpStatusReport,
 };
 use eframe::egui;
 
@@ -99,13 +100,24 @@ impl StatusBarState {
                                 status_dot(ui, Severity::Warn, "PTP unknown");
                             }
                             Some(ptp) => {
-                                let ptp4l_severity = if ptp.ptp4l == Ptp4lStatus::Master {
-                                    Severity::Ok
-                                } else {
-                                    Severity::Warn
+                                let (ptp4l_severity, ptp4l_label) = match &ptp.ptp4l {
+                                    Ptp4lStatus::Master => (Severity::Ok, "PTP4l"),
+                                    // Switched off on purpose, so not a fault.
+                                    Ptp4lStatus::Disabled => (Severity::Warn, "PTP4l off"),
+                                    _ => (Severity::Warn, "PTP4l"),
                                 };
-                                status_dot(ui, ptp4l_severity, "PTP4l");
+                                status_dot(ui, ptp4l_severity, ptp4l_label);
                                 for (i, camera) in ptp.cameras.iter().enumerate() {
+                                    // Captures are only genuinely simultaneous when the
+                                    // trigger runs off the PTP clock *and* that clock is
+                                    // locked — the source flips to PtpClock long before
+                                    // the servo settles.
+                                    let triggered_on_ptp = matches!(
+                                        camera.signal_source,
+                                        Some(PeriodicSignalSource::PtpClock)
+                                    );
+                                    let clock_locked = camera.ptp == CameraPtpStatus::Slave
+                                        && camera.servo == CameraServoStatus::Locked;
                                     let severity = if camera.ptp == CameraPtpStatus::Slave {
                                         Severity::Ok
                                     } else {
@@ -116,7 +128,23 @@ impl StatusBarState {
                                     } else {
                                         "🔓"
                                     };
-                                    status_dot(ui, severity, &format!("Camera {i} PTP {lock_icon}"));
+                                    let sync_icon = match camera.signal_source {
+                                        // Free-run fallback: no trigger to synchronize.
+                                        None => " ∅",
+                                        // Triggered on a PTP-locked clock: cameras are in sync.
+                                        Some(_) if triggered_on_ptp && clock_locked => " ↔",
+                                        // Triggered, but not on a PTP-locked clock: not in sync.
+                                        Some(_) => " ⚠",
+                                    };
+                                    let offset = camera
+                                        .offset_from_master_ns
+                                        .map(|ns| format!(" {:+.1}µs", ns as f64 / 1000.0))
+                                        .unwrap_or_default();
+                                    status_dot(
+                                        ui,
+                                        severity,
+                                        &format!("Camera {i} PTP {lock_icon}{sync_icon}{offset}"),
+                                    );
                                 }
                             }
                         }

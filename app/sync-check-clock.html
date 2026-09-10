@@ -1,0 +1,1091 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Sync check target</title>
+<style>
+  /* The whole page is a measurement target. The background is white and stays
+     white: the thing being measured is the dark band the panel leaves as it
+     resets each row during scanout, and that band is only visible against lit
+     pixels. Everything else on the page is kept small and pushed to the edges
+     so the band crosses an uninterrupted white field. */
+  :root {
+    --fg: #000;
+    --bg: #fff;
+
+    /* Keeps the codes clear of the display's rounded corners, which clip the
+       outer corner of a code flush to the edge — first the quiet zone, then the
+       finder pattern, at which point the code stops decoding. Fixed px, not a
+       viewport unit: the corner radius is a physical property of the panel and
+       does not change when the phone is turned. The one knob to raise if a
+       device still clips. */
+    --edge: 20px;
+
+    /* Every size below is in vmin, so each element covers the same physical
+       area whichever way the phone is held. --qr and --qr5 are targets only:
+       JS overwrites them with the device-pixel-snapped sizes the codes really
+       render at, and publishes the quiet-zone and dark-pattern widths beside
+       them so the strips can be positioned against the visible code. */
+    --qr: 24vmin;
+    --qr5: 26vmin;
+    --qr-inset: 0px;
+    --qr-dark: var(--qr);
+    /* Half the gap between two codes along an edge — the width of a frame
+       number's box. */
+    --nw: calc((100vmin - 2 * var(--edge) - 2 * var(--qr)) / 2);
+    /* Counter-rotation for text inside a turned stage; JS sets the sign. */
+    --unspin: 0deg;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: ui-monospace, "Roboto Mono", "DejaVu Sans Mono", monospace;
+    /* Tabular figures stop digits reflowing as they change, which would
+       otherwise smear the whole line under a long exposure. */
+    font-variant-numeric: tabular-nums;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+
+  /* ── Stage ───────────────────────────────────────────────────────────────
+     The panel scans along one fixed axis of its own glass and turning the phone
+     does not move that axis — but the OS turns the page, which would swing the
+     strips across the scan instead of along it, and would quietly reassign which
+     physical corner each code id names.
+
+     So the stage is always laid out in the panel's native portrait shape, and
+     JS counter-rotates it when the viewport reports landscape. The layout then
+     lands on the glass identically either way, and only the text is turned back
+     so a reader holding the phone sideways can still read it.
+
+     The rotated size and offset are set from JS in exact pixels rather than in
+     vw/vh, which on mobile can refer to a viewport larger than the visible one
+     while a toolbar is showing. */
+  #stage {
+    position: fixed;
+    inset: var(--edge);
+    transform-origin: 50% 50%;
+  }
+
+  /* ── Corner codes ────────────────────────────────────────────────────────
+     Flush to the stage corners, so the finder patterns bound the screen region
+     and an extractor can rectify the panel without any manual ROI. Each canvas
+     is drawn at module resolution and scaled up by the compositor with no
+     smoothing, which keeps module edges hard — a resampled QR photographs far
+     worse than a blocky one.
+
+     The 4-module quiet zone is baked into the canvas rather than left to the
+     page, because on the outward sides there is no page: past the screen edge
+     is the unlit bezel and the room behind it. */
+  .qr {
+    position: absolute;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    width: var(--qr);
+    height: var(--qr);
+  }
+  #q1 { top: 0; left: 0; }
+  #q2 { top: 0; right: 0; }
+  #q3 { bottom: 0; left: 0; }
+  #q4 { bottom: 0; right: 0; }
+
+  /* Plaintext frame number beside each corner code: a human check that the four
+     corners really do disagree across a scanout boundary, without decoding
+     anything. Each is a box rather than a bare text node so the number can be
+     turned inside it without drifting off the stage. */
+  .n {
+    position: absolute;
+    width: var(--nw);
+    height: var(--qr);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 4.5vmin;
+    font-weight: 700;
+    line-height: 1;
+  }
+  #n1 { top: 0; left: var(--qr); }
+  #n2 { top: 0; right: var(--qr); }
+  #n3 { bottom: 0; left: var(--qr); }
+  #n4 { bottom: 0; right: var(--qr); }
+  .n > span { display: inline-block; transform: rotate(var(--unspin)); }
+
+  /* ── Flicker strips ──────────────────────────────────────────────────────
+     Inverts once per refresh. Secondary to the scanline band, and kept only as
+     a human sanity check: if the strips show a clean boundary the exposure is
+     short enough for the band measurement to mean anything, and if they are
+     flat grey it is not.
+
+     They run along the stage's long axis, which is the panel's scan axis, so
+     the boundary travels their length. That is the whole reason the stage is
+     locked to the glass rather than allowed to turn with the page.
+
+     Two strips rather than one, at opposite edges: the boundary height differs
+     between them by exactly the amount the camera's own rolling shutter tilts
+     it, so the pair reads out that tilt directly. */
+  .fbar {
+    position: absolute;
+    /* Flush with the codes' dark pattern on all four sides. The quiet zone is
+       white and invisible, so lining the strips up with the canvas edge instead
+       leaves them looking a quiet zone short at every join. */
+    top: calc(var(--qr) - var(--qr-inset));
+    bottom: calc(var(--qr) - var(--qr-inset));
+    width: var(--qr-dark);
+    border: 1px solid #999;
+    background: #000;
+    will-change: background-color;
+  }
+  #fL { left: var(--qr-inset); }
+  #fR { right: var(--qr-inset); }
+  /* Stripes rather than a flat fill: a paused strip and one whose flicker was
+     averaged out by too long an exposure would otherwise photograph
+     identically, and only one of those is a valid measurement. */
+  .fbar.paused {
+    background-image: repeating-linear-gradient(45deg, #000 0 8px, #777 8px 16px);
+  }
+
+  /* ── Centre block ────────────────────────────────────────────────────────
+     Everything human-readable lives here, small, in the middle, where the corner
+     extraction does not care and the band still has most of the field to cross. */
+  #centre {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  /* Sized to the white channel between the strips, which is what the readouts
+     have to fit inside — they are unreadable over a black strip. Turned back
+     for a sideways reader when the stage is rotated: a transform does not
+     affect layout, so the flex centring still centres the result, and the block
+     then lays out along the long axis where there is far more room. */
+  #cwrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.2vmin;
+    pointer-events: auto;
+    width: calc(100vmin - 2 * var(--edge) - 2 * var(--qr) - 2vmin);
+    transform: rotate(var(--unspin));
+  }
+  html.rot #cwrap {
+    width: calc(100vmax - 2 * var(--edge) - 2 * var(--qr) - 2vmin);
+  }
+  #q5 {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    width: var(--qr5);
+    height: var(--qr5);
+  }
+  /* Sized to fit the channel: 23 monospace advances at ~0.6em each. Deliberately
+     wrappable — a fallback font with wider advances should cost a second line,
+     not run off the screen. */
+  #tline {
+    font-size: 3.6vmin;
+    text-align: center;
+  }
+  /* Wraps rather than overflowing — the static diagnostics live in the help
+     panel, so what is left here is short enough to cost the field two lines. */
+  #info {
+    font-size: 2.8vmin;
+    opacity: 0.7;
+    text-align: center;
+    line-height: 1.4;
+  }
+  #btn {
+    font: inherit;
+    font-size: 3.4vmin;
+    width: 2.4em;
+    height: 2.4em;
+    border-radius: 50%;
+    background: none;
+    color: var(--fg);
+    border: 2px solid var(--fg);
+    opacity: 0.35;
+    cursor: pointer;
+  }
+
+  /* ── Help ────────────────────────────────────────────────────────────── */
+  #help {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    color: var(--fg);
+    padding: 6vw;
+    font-size: min(4vw, 2.4vh);
+    line-height: 1.6;
+    overflow-y: auto;
+    display: none;
+    z-index: 10;
+  }
+  #help.show { display: block; }
+  #help h1 { font-size: 1.4em; margin-bottom: 0.8em; }
+  #help h2 { font-size: 1.1em; margin: 1.2em 0 0.5em; }
+  #help p { margin-bottom: 0.9em; }
+  #help code { background: #eee; padding: 0 0.3em; }
+</style>
+</head>
+<body>
+
+  <div id="stage">
+    <canvas class="qr" id="q1"></canvas>
+    <canvas class="qr" id="q2"></canvas>
+    <canvas class="qr" id="q3"></canvas>
+    <canvas class="qr" id="q4"></canvas>
+    <div class="n" id="n1"><span>0</span></div>
+    <div class="n" id="n2"><span>0</span></div>
+    <div class="n" id="n3"><span>0</span></div>
+    <div class="n" id="n4"><span>0</span></div>
+
+    <div class="fbar" id="fL"></div>
+    <div class="fbar" id="fR"></div>
+
+    <div id="centre">
+      <div id="cwrap">
+        <canvas id="q5"></canvas>
+        <div id="tline">--:--:--.--- · -- Hz</div>
+        <div id="info">&nbsp;</div>
+        <button id="btn" aria-label="Help">?</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="help">
+    <h1>Sync check target</h1>
+
+    <p>Point both cameras at this screen and capture. The screen is a white
+    field with five QR codes; the measurement is the dark band the panel leaves
+    behind as it scans, which crosses that white field once per refresh.</p>
+
+    <h2>What the codes carry</h2>
+    <p>The four corner codes each encode
+    <code>{"frame":N,"id":K}</code> with <code>K</code> = 1 top-left,
+    2 top-right, 3 bottom-left, 4 bottom-right. All five are painted in the
+    same animation frame and therefore carry the same <code>N</code> — so if a
+    photograph shows different values at different corners, the scanout
+    boundary passed between them during the exposure. That brackets the
+    exposure to a known point in the panel's scan.</p>
+    <p>The centre code encodes
+    <code>{"t":&lt;epoch ms&gt;,"n":N,"id":5,"g":[...]}</code>, tying the frame
+    number to the host clock and carrying the layout in <code>g</code>:
+    viewport width and height, panel width and height, device pixel ratio, the
+    inset <code>o</code> from each viewport edge to a corner code's dark
+    pattern, that pattern's side length <code>k</code>, the measured refresh
+    rate, and the stage's own inset from the viewport edge — all in CSS pixels,
+    all read straight off the page's own layout rather than assumed by whatever
+    reads this back later.</p>
+    <p>That is what makes a photograph measurable. The corner codes give four
+    anchors in image coordinates; <code>g</code> gives the same four in page
+    coordinates, at <code>[o,o]</code>, <code>[vs-o-k,o]</code>,
+    <code>[o,vl-o-k]</code> and <code>[vs-o-k,vl-o-k]</code> for ids 1 to 4.
+    Every length in <code>g</code> is in the panel's own frame, short axis
+    first and long axis second, so none of it changes meaning when the phone is
+    turned. The long axis is the scan axis.</p>
+    <p>Panel size is reported separately from viewport size because the scanout
+    covers the whole panel: unless the page is fullscreen, a band halfway down
+    the viewport is not halfway through the scan.</p>
+    <p>The plaintext number beside each corner is the same <code>N</code>, for
+    reading by eye without decoding.</p>
+
+    <h2>Turning the phone</h2>
+    <p>The panel scans along one fixed axis of its own glass, and turning the
+    phone does not move it. The page is therefore turned back against the
+    system rotation, so the layout lands on the glass identically either way:
+    the strips keep running along the scan, and each code id keeps naming the
+    same physical corner. Only the text is turned the other way again, so it
+    stays readable — that is the one thing that should look different in
+    landscape.</p>
+    <p>Which way to turn it back is taken from the reported orientation angle.
+    If that is wrong on a device it costs nothing structural, since the strips
+    lie along the scan either way; it only rotates the id-to-corner mapping
+    through 180 degrees. The frame numbers settle it regardless: the pair
+    showing the higher number was scanned first, so those two codes are at the
+    scan origin.</p>
+
+    <h2>Why the bands are slanted</h2>
+    <p>There are two scans, not one. The panel emits row by row, and a rolling
+    shutter camera <i>samples</i> row by row. A pixel goes dark where the
+    camera's exposure window at that point misses the panel's emission there,
+    and the locus of that condition is a line whose slope is set by the
+    <i>ratio</i> of the two scan rates. So the bands align with neither the
+    screen nor the sensor, and their angle changes when you rotate the phone
+    relative to the camera.</p>
+    <p>This is why the band angle is informative: with the phone in landscape
+    the slope is <code>tPanel·a / tRow</code>, which measures the camera's row
+    period once you know how many image pixels the screen spans.</p>
+
+    <h2>Reading a sync error</h2>
+    <p>Band <i>position</i> also depends on mounting geometry, which differs
+    between the two cameras and is unknown. Do not compare absolute band
+    positions. Instead take many frames and track how the difference between
+    the two cameras' band positions <i>varies</i>: the static geometric offset
+    cancels, the phone's own drift is common to both, and what is left is the
+    relative clock behaviour, at sub-refresh resolution.</p>
+
+    <h2>Capture settings</h2>
+    <p><b>Keep the exposure well under one refresh period</b> — a millisecond
+    or two. Any longer and the band smears across the field and the flicker
+    strips average to flat grey.</p>
+    <p><b>Screen at full brightness.</b> OLED panels dim by strobing, which
+    lays a second, faster banding over the one you want.</p>
+    <p>The two flicker strips invert once per refresh. Use them as a validity
+    check on the exposure, and read the difference in boundary height between
+    the left and right strip to get the band tilt directly.</p>
+    <p><b>The strips stop themselves after three minutes</b> and show diagonal
+    stripes instead; tap to re-arm. Alternating a large area between black and
+    white every refresh provokes image retention. The white field itself is
+    harmless by comparison, but do not leave the page up for hours.</p>
+
+    <h2>Notes</h2>
+    <p><b>Check the info line before trusting a run.</b> <i>worst</i> is the
+    longest gap between animation frames in the last second — compare it to the
+    period implied by the Hz reading; roughly double means a frame was dropped.
+    <i>long</i> counts those cumulatively. A dropped frame breaks the assumption
+    that consecutive frame numbers are one refresh apart, and it leaves no trace
+    in the photograph, so a run with a rising <i>long</i> count should be thrown
+    away rather than analysed.</p>
+    <p><b>Screen sleep.</b> The info line shows <i>screen on</i> when the page
+    holds a wake lock.</p>
+    <p><i>blocked</i> means the browser has the API but refused the request.
+    Tap the screen — the first attempt happens at load, before the page has any
+    user interaction, and tapping retries it. If it stays blocked, battery saver
+    is the usual cause.</p>
+    <p><i>unsupported</i> means the API is not there at all, which is what a
+    <b>plain http URL</b> gets you: the wake lock needs a secure context, and
+    only https, localhost and <code>file://</code> count — an http address on
+    the LAN or over Tailscale does not. So loading this page from a served
+    http URL is convenient but costs the wake lock, where opening the file from
+    the phone's own storage keeps it. Either way, raising the display timeout in
+    Android settings works regardless and does not depend on the page at all.</p>
+    <p>The displayed time lags the clock by roughly one frame plus panel
+    latency. That is common to both cameras so it cancels between them, but it
+    makes this a poor way to check a camera timestamp against the phone's own
+    clock, which is not synchronized to the acquisition host anyway.</p>
+    <p>Tap anywhere to re-arm the strips and to go fullscreen. Leaving
+    fullscreen is by the system back gesture, so re-arming mid-session never
+    moves the target.</p>
+    <p><b>This device.</b> <span id="hgeom">-</span></p>
+    <p style="opacity:.6">app/sync-check-clock.html</p>
+  </div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ══ QR encoder ═══════════════════════════════════════════════════════════
+  //
+  // Inline rather than a library because this page has to run from local
+  // storage on a phone with no network, so nothing may be fetched.
+  //
+  // Scope is deliberately narrow: byte mode, versions 1-6, error correction
+  // levels M and above. That covers every payload this page produces with room
+  // to spare, and leaving out the version-information blocks (only required
+  // from version 7) and error correction level L removes the two parts most
+  // easily got subtly wrong.
+  //
+  // Everything is encoded fresh every refresh — the frame number changes each
+  // time — so the hot path allocates nothing: scratch buffers are cached per
+  // (version, level) and the mask search reuses one matrix, exploiting XOR
+  // being its own inverse to undo each trial mask in place. A page that
+  // measures refresh timing must not itself provoke garbage collection.
+
+  const ENC = new TextEncoder();
+
+  // ── GF(256), primitive polynomial 0x11d ──
+  const EXP = new Uint8Array(512);
+  const LOG = new Uint8Array(256);
+  (() => {
+    let x = 1;
+    for (let i = 0; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+    for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  })();
+  const gmul = (a, b) => (a === 0 || b === 0) ? 0 : EXP[LOG[a] + LOG[b]];
+
+  const genCache = new Map();
+  function genPoly(n) {
+    let g = genCache.get(n);
+    if (g) return g;
+    // Coefficients highest-degree first; g[0] is always 1.
+    let poly = [1];
+    for (let i = 0; i < n; i++) {
+      const next = new Array(poly.length + 1).fill(0);
+      for (let j = 0; j < poly.length; j++) {
+        next[j] ^= poly[j];
+        next[j + 1] ^= gmul(poly[j], EXP[i]);
+      }
+      poly = next;
+    }
+    g = Uint8Array.from(poly);
+    genCache.set(n, g);
+    return g;
+  }
+
+  /** Remainder of data[start..start+len) divided by the degree-ecLen generator. */
+  function rsEncode(data, start, len, ecLen, out) {
+    const g = genPoly(ecLen);
+    out.fill(0, 0, ecLen);
+    for (let i = 0; i < len; i++) {
+      const factor = data[start + i] ^ out[0];
+      out.copyWithin(0, 1, ecLen);
+      out[ecLen - 1] = 0;
+      if (factor !== 0) {
+        for (let j = 0; j < ecLen; j++) out[j] ^= gmul(g[j + 1], factor);
+      }
+    }
+  }
+
+  // ── Version / error-correction tables ──
+  // [ecCodewordsPerBlock, group1Blocks, group1DataCodewords,
+  //  group2Blocks, group2DataCodewords], indexed [level][version].
+  // Levels are named by their format-info bit pattern, which is what gets
+  // written into the symbol; strength order is H > Q > M.
+  const EC = {
+    M: { fmt: 0, t: { 1:[10,1,16,0,0], 2:[16,1,28,0,0], 3:[26,1,44,0,0],
+                      4:[18,2,32,0,0], 5:[24,2,43,0,0], 6:[16,4,27,0,0] } },
+    Q: { fmt: 3, t: { 1:[13,1,13,0,0], 2:[22,1,22,0,0], 3:[18,2,17,0,0],
+                      4:[26,2,24,0,0], 5:[18,2,15,2,16], 6:[24,4,19,0,0] } },
+    H: { fmt: 2, t: { 1:[17,1,9,0,0],  2:[28,1,16,0,0], 3:[22,2,13,0,0],
+                      4:[16,4,9,0,0],  5:[22,2,11,2,12], 6:[28,4,15,0,0] } },
+  };
+  const ALIGN = { 1: [], 2: [6,18], 3: [6,22], 4: [6,26], 5: [6,30], 6: [6,34] };
+  const MAX_VER = 6;
+
+  /** Data codewords a (version, level) holds. */
+  const dataWords = (spec) => spec[1] * spec[2] + spec[3] * spec[4];
+  /** Byte-mode payload capacity: 4 mode bits + 8 length bits of overhead. */
+  const byteCap = (spec) => dataWords(spec) - 2;
+
+  /**
+   * Smallest version that fits, and within it the strongest level.
+   *
+   * Version dominates: at a fixed on-screen size a lower version means larger
+   * modules, which photographs better than any amount of error correction. But
+   * once the version is settled, stronger correction is free, and it is what
+   * lets a code stay decodable when a scanout band crosses it.
+   */
+  function pickSpec(len) {
+    for (let ver = 1; ver <= MAX_VER; ver++) {
+      for (const lvl of ["H", "Q", "M"]) {
+        const spec = EC[lvl].t[ver];
+        if (byteCap(spec) >= len) return { ver, lvl, spec };
+      }
+    }
+    throw new Error("QR payload too long: " + len + " bytes");
+  }
+
+  /** 15-bit format information: 5 data bits, BCH(15,5) parity, XOR 0x5412. */
+  function formatBits(fmt, mask) {
+    const data = (fmt << 3) | mask;
+    let rem = data;
+    for (let i = 0; i < 10; i++) rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+    return ((data << 10) | rem) ^ 0x5412;
+  }
+
+  /**
+   * Write the two copies of the format information.
+   * `func` is the function-module map, or null to leave the map untouched —
+   * during the mask search the positions are already marked and only the
+   * values change.
+   */
+  function drawFormat(mods, func, size, fmt, mask) {
+    const bits = formatBits(fmt, mask);
+    const bit = (i) => (bits >>> i) & 1;
+    const put = (x, y, v) => { mods[y * size + x] = v; if (func) func[y * size + x] = 1; };
+    for (let i = 0; i <= 5; i++) put(8, i, bit(i));
+    put(8, 7, bit(6)); put(8, 8, bit(7)); put(7, 8, bit(8));
+    for (let i = 9; i < 15; i++) put(14 - i, 8, bit(i));
+    for (let i = 0; i < 8; i++) put(size - 1 - i, 8, bit(i));
+    for (let i = 8; i < 15; i++) put(8, size - 15 + i, bit(i));
+    put(8, size - 8, 1);   // always dark
+  }
+
+  // Function patterns depend only on the version, so build them once. Timing
+  // is drawn before the finders so the finders overwrite it where they overlap.
+  const tmplCache = new Map();
+  function template(ver, fmt) {
+    const key = ver * 8 + fmt;
+    let t = tmplCache.get(key);
+    if (t) return t;
+    const size = ver * 4 + 17;
+    const mods = new Uint8Array(size * size);
+    const func = new Uint8Array(size * size);
+    const set = (x, y, dark) => { mods[y * size + x] = dark ? 1 : 0; func[y * size + x] = 1; };
+
+    for (let i = 0; i < size; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+
+    const finder = (cx, cy) => {
+      for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+        const x = cx + dx, y = cy + dy;
+        if (x < 0 || x >= size || y < 0 || y >= size) continue;
+        const d = Math.max(Math.abs(dx), Math.abs(dy));
+        set(x, y, d !== 2 && d !== 4);   // 3x3 core, light ring, dark ring, separator
+      }
+    };
+    finder(3, 3); finder(size - 4, 3); finder(3, size - 4);
+
+    const ap = ALIGN[ver];
+    for (let i = 0; i < ap.length; i++) for (let j = 0; j < ap.length; j++) {
+      const last = ap.length - 1;
+      if ((i === 0 && j === 0) || (i === 0 && j === last) || (i === last && j === 0)) continue;
+      for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++)
+        set(ap[j] + dx, ap[i] + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }
+
+    drawFormat(mods, func, size, fmt, 0);   // reserve; values rewritten per mask
+    t = { size, mods, func };
+    tmplCache.set(key, t);
+    return t;
+  }
+
+  function applyMask(mods, func, size, mask) {
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+      const idx = y * size + x;
+      if (func[idx]) continue;
+      let inv;
+      switch (mask) {
+        case 0: inv = (x + y) % 2 === 0; break;
+        case 1: inv = y % 2 === 0; break;
+        case 2: inv = x % 3 === 0; break;
+        case 3: inv = (x + y) % 3 === 0; break;
+        case 4: inv = (((x / 3) | 0) + ((y / 2) | 0)) % 2 === 0; break;
+        case 5: inv = (x * y) % 2 + (x * y) % 3 === 0; break;
+        case 6: inv = ((x * y) % 2 + (x * y) % 3) % 2 === 0; break;
+        default: inv = ((x + y) % 2 + (x * y) % 3) % 2 === 0; break;
+      }
+      if (inv) mods[idx] ^= 1;
+    }
+  }
+
+  // ── Penalty scoring (ISO/IEC 18004 rules N1-N4) ──
+  const N1 = 3, N2 = 3, N3 = 40, N4 = 10;
+  const runHist = new Int32Array(7);
+
+  function histAdd(runLen, size) {
+    if (runHist[0] === 0) runLen += size;   // light border before the first run
+    for (let i = 6; i > 0; i--) runHist[i] = runHist[i - 1];
+    runHist[0] = runLen;
+  }
+  /** Counts 1:1:3:1:1 finder-lookalikes with a 4-wide light margin on either side. */
+  function histCount() {
+    const n = runHist[1];
+    const core = n > 0 && runHist[2] === n && runHist[3] === n * 3 && runHist[4] === n && runHist[5] === n;
+    return (core && runHist[0] >= n * 4 && runHist[6] >= n ? 1 : 0)
+         + (core && runHist[6] >= n * 4 && runHist[0] >= n ? 1 : 0);
+  }
+  function histTerminate(runColor, runLen, size) {
+    if (runColor === 1) { histAdd(runLen, size); runLen = 0; }
+    histAdd(runLen + size, size);
+    return histCount();
+  }
+
+  function penalty(mods, size) {
+    let result = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      // pass 0 walks rows, pass 1 walks columns; the rules are symmetric.
+      for (let a = 0; a < size; a++) {
+        runHist.fill(0);
+        let runColor = 0, runLen = 0;
+        for (let b = 0; b < size; b++) {
+          const c = mods[pass === 0 ? a * size + b : b * size + a];
+          if (c === runColor) {
+            runLen++;
+            if (runLen === 5) result += N1; else if (runLen > 5) result++;
+          } else {
+            histAdd(runLen, size);
+            if (runColor === 0) result += histCount() * N3;
+            runColor = c; runLen = 1;
+          }
+        }
+        result += histTerminate(runColor, runLen, size) * N3;
+      }
+    }
+    for (let y = 0; y < size - 1; y++) for (let x = 0; x < size - 1; x++) {
+      const c = mods[y * size + x];
+      if (c === mods[y * size + x + 1] && c === mods[(y + 1) * size + x] && c === mods[(y + 1) * size + x + 1])
+        result += N2;
+    }
+    let dark = 0;
+    for (let i = 0; i < size * size; i++) dark += mods[i];
+    const total = size * size;
+    result += (Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1) * N4;
+    return result;
+  }
+
+  // ── Scratch buffers, one set per (version, level) ──
+  const scratchCache = new Map();
+  function scratch(ver, lvl, spec) {
+    const key = ver + lvl;
+    let s = scratchCache.get(key);
+    if (s) return s;
+    const ecLen = spec[0];
+    const nBlocks = spec[1] + spec[3];
+    const nData = dataWords(spec);
+    const size = ver * 4 + 17;
+    s = {
+      data: new Uint8Array(nData),
+      ecAll: new Uint8Array(nBlocks * ecLen),
+      tmp: new Uint8Array(ecLen),
+      raw: new Uint8Array(nData + nBlocks * ecLen),
+      mods: new Uint8Array(size * size),
+      lens: new Int32Array(nBlocks),
+    };
+    for (let i = 0; i < nBlocks; i++) s.lens[i] = i < spec[1] ? spec[2] : spec[4];
+    scratchCache.set(key, s);
+    return s;
+  }
+
+  let bitPos = 0;
+  function putBits(buf, val, len) {
+    for (let i = len - 1; i >= 0; i--) {
+      buf[bitPos >>> 3] |= ((val >>> i) & 1) << (7 - (bitPos & 7));
+      bitPos++;
+    }
+  }
+
+  /** Encode `text` as a QR symbol. Returns a view valid until the next call
+      for the same (version, level) — render it before encoding again. */
+  function encodeQR(text) {
+    const bytes = ENC.encode(text);
+    const { ver, lvl, spec } = pickSpec(bytes.length);
+    const fmt = EC[lvl].fmt;
+    const ecLen = spec[0];
+    const nBlocks = spec[1] + spec[3];
+    const nData = dataWords(spec);
+    const s = scratch(ver, lvl, spec);
+
+    // Bit stream: mode 0100, 8-bit length (versions 1-9), payload, terminator,
+    // byte alignment, then the alternating pad codewords.
+    s.data.fill(0);
+    bitPos = 0;
+    putBits(s.data, 4, 4);
+    putBits(s.data, bytes.length, 8);
+    for (let i = 0; i < bytes.length; i++) putBits(s.data, bytes[i], 8);
+    const cap = nData * 8;
+    putBits(s.data, 0, Math.min(4, cap - bitPos));
+    putBits(s.data, 0, (8 - (bitPos & 7)) & 7);
+    for (let pad = 0xec; bitPos < cap; pad ^= 0xec ^ 0x11) putBits(s.data, pad, 8);
+
+    // Per-block error correction, then interleave data then EC codewords.
+    let off = 0;
+    for (let b = 0; b < nBlocks; b++) {
+      rsEncode(s.data, off, s.lens[b], ecLen, s.tmp);
+      s.ecAll.set(s.tmp, b * ecLen);
+      off += s.lens[b];
+    }
+    let k = 0;
+    const maxLen = Math.max(spec[2], spec[4]);
+    for (let i = 0; i < maxLen; i++) {
+      let o = 0;
+      for (let b = 0; b < nBlocks; b++) {
+        if (i < s.lens[b]) s.raw[k++] = s.data[o + i];
+        o += s.lens[b];
+      }
+    }
+    for (let i = 0; i < ecLen; i++)
+      for (let b = 0; b < nBlocks; b++) s.raw[k++] = s.ecAll[b * ecLen + i];
+
+    // Place the codewords: upward/downward zigzag over column pairs from the
+    // right, skipping the vertical timing column.
+    const t = template(ver, fmt);
+    const size = t.size, mods = s.mods, func = t.func;
+    mods.set(t.mods);
+    const nBits = s.raw.length * 8;
+    let bi = 0;
+    for (let right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (let vert = 0; vert < size; vert++) {
+        for (let j = 0; j < 2; j++) {
+          const x = right - j;
+          const y = ((right + 1) & 2) === 0 ? size - 1 - vert : vert;
+          const idx = y * size + x;
+          if (!func[idx] && bi < nBits) {
+            mods[idx] = (s.raw[bi >>> 3] >>> (7 - (bi & 7))) & 1;
+            bi++;
+          }
+        }
+      }
+    }
+
+    // Trial each mask in place; XOR undoes itself, so one matrix suffices.
+    let best = 0, bestScore = Infinity;
+    for (let m = 0; m < 8; m++) {
+      applyMask(mods, func, size, m);
+      drawFormat(mods, null, size, fmt, m);
+      const p = penalty(mods, size);
+      if (p < bestScore) { bestScore = p; best = m; }
+      applyMask(mods, func, size, m);
+    }
+    applyMask(mods, func, size, best);
+    drawFormat(mods, null, size, fmt, best);
+    return { size, mods, ver, lvl };
+  }
+
+  // ══ Rendering ════════════════════════════════════════════════════════════
+
+  // Quiet zone in modules, per ISO/IEC 18004. Baked into the canvas because on
+  // the outward sides of a corner code the page has already ended.
+  const QUIET = 4;
+
+  function slot(id) {
+    const canvas = document.getElementById(id);
+    return { canvas, ctx: canvas.getContext("2d", { alpha: false }), img: null, dim: 0 };
+  }
+
+  /**
+   * Encode and paint one code. The canvas is kept at module resolution and
+   * scaled by the compositor, so this writes a few hundred pixels per frame
+   * rather than rasterising rectangles.
+   */
+  function renderQR(s, text) {
+    const q = encodeQR(text);
+    const dim = q.size + QUIET * 2;
+    if (s.dim !== dim) {
+      s.canvas.width = dim;
+      s.canvas.height = dim;
+      s.img = s.ctx.createImageData(dim, dim);
+      s.dim = dim;
+    }
+    const d = s.img.data;
+    d.fill(255);
+    const n = q.size;
+    for (let y = 0; y < n; y++) {
+      const row = y * n;
+      let o = ((y + QUIET) * dim + QUIET) * 4;
+      for (let x = 0; x < n; x++, o += 4) {
+        if (q.mods[row + x]) { d[o] = 0; d[o + 1] = 0; d[o + 2] = 0; }
+      }
+    }
+    s.ctx.putImageData(s.img, 0, 0);
+    return q;
+  }
+
+  // ══ Page ═════════════════════════════════════════════════════════════════
+
+  const corners = [slot("q1"), slot("q2"), slot("q3"), slot("q4")];
+  const nLabels = [1, 2, 3, 4].map((i) =>
+    document.getElementById("n" + i).firstElementChild);
+  const centre  = slot("q5");
+  const elT     = document.getElementById("tline");
+  const elInfo  = document.getElementById("info");
+  const fbars   = [document.getElementById("fL"), document.getElementById("fR")];
+  const help    = document.getElementById("help");
+
+  /**
+   * Snap every code to a whole number of device pixels per module.
+   *
+   * `image-rendering: pixelated` at a fractional scale makes some modules a
+   * pixel wider than their neighbours, which is the one distortion a QR decoder
+   * has almost no tolerance for — it samples module centres off the timing
+   * pattern and uneven widths walk those samples off. Letting CSS choose the
+   * size and then rounding to an integer scale costs under a module of width
+   * and keeps every module identical.
+   *
+   * The snapped size is published back as --qr, so the strips and the centre
+   * channel are laid out against the size the codes really render at. Deriving
+   * them from the CSS target instead is what left a quiet zone of daylight at
+   * every join.
+   */
+  /**
+   * Lock the stage to the glass.
+   *
+   * The panel's scan axis is fixed to the panel. When the OS turns the page,
+   * the stage is turned back by the same amount, so the strips keep running
+   * along the scan and code id 1 keeps naming the same physical corner. Only
+   * the text is turned the other way again, via --unspin, so it stays readable.
+   *
+   * Sizes and offsets are exact pixels from innerWidth/innerHeight rather than
+   * vw/vh, which on mobile can describe a viewport larger than the visible one
+   * while a browser toolbar is showing.
+   *
+   * The sign comes from screen.orientation.angle. Getting it wrong costs
+   * nothing structural — the strips still lie along the scan either way — it
+   * only turns the id-to-corner mapping through 180 degrees, which the frame
+   * numbers themselves settle: the pair showing the higher number was scanned
+   * first and is therefore at the scan origin.
+   */
+  function applyOrientation() {
+    const root = document.documentElement;
+    const stage = document.getElementById("stage");
+    const W = innerWidth, H = innerHeight;
+    const rot = W > H;
+    root.classList.toggle("rot", rot);
+    if (!rot) {
+      stage.style.width = stage.style.height = stage.style.transform = "";
+      root.style.setProperty("--unspin", "0deg");
+      return;
+    }
+    const angle = (screen.orientation && screen.orientation.angle) || 0;
+    const spin = angle === 270 ? 90 : -90;
+    const E = parseFloat(getComputedStyle(root).getPropertyValue("--edge")) || 0;
+    stage.style.width = (H - 2 * E) + "px";
+    stage.style.height = (W - 2 * E) + "px";
+    stage.style.transform =
+      `translate(${(W - H) / 2}px, ${(H - W) / 2}px) rotate(${spin}deg)`;
+    root.style.setProperty("--unspin", -spin + "deg");
+  }
+
+  function snapAll() {
+    const root = document.documentElement;
+    const dpr = devicePixelRatio || 1;
+    // Drop the previous answers so the CSS targets apply again; otherwise an
+    // orientation change would keep measuring the size it last chose.
+    root.style.removeProperty("--qr");
+    root.style.removeProperty("--qr5");
+
+    const fit = (s, prop) => {
+      if (!s.dim) return 0;
+      const target = s.canvas.getBoundingClientRect().width;
+      const scale = Math.max(1, Math.round((target * dpr) / s.dim));
+      const px = (s.dim * scale) / dpr;
+      root.style.setProperty(prop, px + "px");
+      return px / s.dim;
+    };
+    const perModule = fit(corners[0], "--qr");
+    fit(centre, "--qr5");
+    if (perModule > 0) {
+      root.style.setProperty("--qr-inset", perModule * QUIET + "px");
+      root.style.setProperty("--qr-dark",
+        perModule * (corners[0].dim - QUIET * 2) + "px");
+      // Where the codes ended up, for the centre code to report. Measured off
+      // the live rect rather than recomputed from --edge, so it stays true if
+      // the stylesheet's inset is ever changed.
+      // getBoundingClientRect reports post-transform, so in a turned stage
+      // this code is not at the viewport's top-left. The layout is symmetric,
+      // so take the distance to whichever edges it is actually against.
+      const r = corners[0].canvas.getBoundingClientRect();
+      const gap = Math.min(r.left, innerWidth - r.right,
+                           r.top, innerHeight - r.bottom);
+      geomO = Math.round(gap + perModule * QUIET);
+      geomK = Math.round(perModule * (corners[0].dim - QUIET * 2));
+    }
+  }
+
+  /**
+   * The centre code's payload.
+   *
+   * `g` is what turns a decoded photograph into a measurement. The corner codes
+   * give an extractor four anchors in image coordinates; `g` gives the same four
+   * in page coordinates, so the two can be related:
+   *
+   * Everything is in the panel's own frame — short axis first, long axis
+   * second — never the viewport's, so the numbers do not change meaning when
+   * the phone is turned. The long axis is the scan axis.
+   *
+   *   [0] vs [1]  viewport, CSS px, short then long
+   *   [2] ps [3]  panel, CSS px, short then long. Equal to the viewport only
+   *               when fullscreen, and the scanout covers the panel, not the
+   *               viewport, so the two are not interchangeable
+   *   [4] dpr     CSS px -> physical rows
+   *   [5] o       inset from each edge to a corner code's dark pattern
+   *   [6] k       side length of that dark pattern
+   *   [7] hz      measured refresh rate: the band position's conversion to time
+   *   [8] edge    stage inset from the viewport edge (--edge)
+   *
+   * The stage occupies [edge, viewport - edge] on each axis, and the four dark
+   * patterns sit at [o,o], [vs-o-k,o], [o,vl-o-k] and [vs-o-k,vl-o-k] measured
+   * from the stage's own edges, holding code ids 1, 2, 3 and 4. Module pitch is
+   * k over the code's module count, which a decoder already knows from the
+   * version it read. `edge` is carried here rather than left as an assumed
+   * constant on the analysis side, so a page whose CSS changes after a
+   * recording was made does not silently make that recording misread.
+   */
+  function centrePayload(wallMs, n) {
+    const vs = Math.min(innerWidth, innerHeight);
+    const vl = Math.max(innerWidth, innerHeight);
+    const ps = Math.min(screen.width, screen.height);
+    const pl = Math.max(screen.width, screen.height);
+    const edge = parseFloat(getComputedStyle(document.documentElement)
+      .getPropertyValue("--edge")) || 0;
+    return '{"t":' + Math.round(wallMs) + ',"n":' + n + ',"id":5,"g":[' +
+      vs + ',' + vl + ',' + ps + ',' + pl + ',' +
+      (devicePixelRatio || 1).toFixed(2) + ',' + geomO + ',' + geomK + ',' +
+      hz.toFixed(2) + ',' + edge + ']}';
+  }
+  const relayout = () => { applyOrientation(); snapAll(); };
+  addEventListener("resize", relayout);
+  addEventListener("orientationchange", relayout);
+  let snapped = false;
+  let geomO = 0, geomK = 0;
+
+  // Inverting a large area every refresh is a harsh pattern for a panel, so it
+  // runs on a timer and has to be re-armed by touching the screen rather than
+  // being left to burn away unattended. The white field is not on this timer:
+  // it is static, and it is the measurement.
+  const FLICKER_MS = 180000;
+  let flickerUntil = 0;
+  let flickerPaused = true;
+  const armFlicker = () => { flickerUntil = performance.now() + FLICKER_MS; };
+  armFlicker();
+
+  const pad = (n, w) => String(n).padStart(w, "0");
+
+  /** Local UTC offset as ±HH:MM, so the printed instant is unambiguous. */
+  function offsetString(d) {
+    const mins = -d.getTimezoneOffset();
+    const abs = Math.abs(mins);
+    return (mins >= 0 ? "+" : "-") + pad(Math.floor(abs / 60), 2) + ":" + pad(abs % 60, 2);
+  }
+
+  let frames = 0;
+  let hz = 0;
+  let specLabel = "";
+
+  // Rolling refresh estimate over a one-second window.
+  let hzStart = 0, hzFrames = 0;
+
+  // A dropped animation frame breaks the assumption the whole method rests on —
+  // that consecutive frame numbers are one refresh apart — and it is invisible
+  // in a photograph, so it has to be reported here: a run whose long-frame count
+  // is rising should be discarded rather than analysed.
+  //
+  // `worst` is the longest interval in the window just reported, in ms, and is
+  // raw enough to need no interpretation: compare it against the period implied
+  // by the Hz beside it. `long` counts intervals over 1.5 periods, measured
+  // against the *previous* window's rate rather than the shortest interval yet
+  // seen — one spuriously short frame would poison a running minimum for the
+  // rest of the session and report every normal frame after it as a drop.
+  let lastRaf = 0, worstDelta = 0, reportedWorst = 0, longFrames = 0;
+
+  function tick(rafTime) {
+    requestAnimationFrame(tick);
+
+    if (lastRaf > 0) {
+      const dt = rafTime - lastRaf;
+      if (dt > worstDelta) worstDelta = dt;
+      if (hz > 0 && dt > 1.5 * (1000 / hz)) longFrames++;
+    }
+    lastRaf = rafTime;
+
+    // rafTime is relative to timeOrigin; together they give a wall-clock
+    // instant for the start of this frame's render.
+    const wall = performance.timeOrigin + rafTime;
+    const n = frames;
+
+    // All five codes are painted in this one callback and therefore carry the
+    // same frame number. Any disagreement a camera sees between them was
+    // introduced by the panel's scanout, which is the whole point.
+    for (let i = 0; i < 4; i++) {
+      const q = renderQR(corners[i], '{"frame":' + n + ',"id":' + (i + 1) + '}');
+      nLabels[i].textContent = n;
+      if (i === 0) specLabel = "v" + q.ver + q.lvl;
+    }
+    const q5 = renderQR(centre, centrePayload(wall, n));
+    if (!snapped) { relayout(); snapped = true; }
+
+    // Only the parts that change every frame; the date and UTC offset are in
+    // the help panel, and the machine-readable instant is in the centre code.
+    const d = new Date(wall);
+    elT.textContent =
+      `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}` +
+      `.${pad(d.getMilliseconds(), 3)} · ${hz.toFixed(2)} Hz`;
+
+    if (rafTime < flickerUntil) {
+      if (flickerPaused) {
+        for (const b of fbars) b.classList.remove("paused");
+        flickerPaused = false;
+      }
+      const c = (n & 1) ? "#fff" : "#000";
+      for (const b of fbars) b.style.backgroundColor = c;
+    } else if (!flickerPaused) {
+      for (const b of fbars) b.classList.add("paused");
+      flickerPaused = true;
+    }
+
+    frames++;
+    hzFrames++;
+    if (hzStart === 0) {
+      hzStart = rafTime;
+    } else if (rafTime - hzStart >= 1000) {
+      hz = (hzFrames * 1000) / (rafTime - hzStart);
+      hzStart = rafTime;
+      hzFrames = 0;
+      reportedWorst = worstDelta;
+      worstDelta = 0;
+
+      const left = Math.max(0, Math.ceil((flickerUntil - rafTime) / 1000));
+      const armed = left > 0 ? `${Math.floor(left / 60)}:${pad(left % 60, 2)}` : "paused";
+      elInfo.textContent =
+        `screen ${wakeState} · flicker ${armed}` +
+        ` · worst ${reportedWorst.toFixed(1)} ms · long ${longFrames}`;
+      // Static facts go where they cost the white field nothing. Screen geometry
+      // is here so band positions read off a photograph can be converted back to
+      // physical panel rows.
+      const g = document.getElementById("hgeom");
+      if (g) {
+        g.textContent =
+          `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)}` +
+          ` ${offsetString(d)} · qr ${specLabel}/v${q5.ver}${q5.lvl}` +
+          ` · ${innerWidth}x${innerHeight} css @${(devicePixelRatio || 1).toFixed(2)}`;
+      }
+    }
+  }
+  // Render once and measure before the loop starts: the geometry the centre
+  // code reports comes from the laid-out codes, so they have to exist first.
+  renderQR(corners[0], '{"frame":0,"id":1}');
+  renderQR(centre, centrePayload(Date.now(), 0));
+  relayout();
+  requestAnimationFrame(tick);
+
+  // ══ Screen wake lock ═════════════════════════════════════════════════════
+  //
+  // Needs a secure context, and a browser may additionally require transient
+  // user activation — so asking once at load is not enough: that attempt can be
+  // refused before the page has ever been touched, and nothing would retry it.
+  // Ask again on the first touch and whenever the lock is released, and report
+  // the outcome, because a wake lock that silently failed looks exactly like
+  // one that worked until the screen goes dark mid-capture.
+  let wakeLock = null;
+  let wakeState = "?";
+
+  async function acquireWakeLock() {
+    if (!("wakeLock" in navigator)) { wakeState = "unsupported"; return; }
+    if (wakeLock) return;
+    try {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeState = "on";
+      wakeLock.addEventListener("release", () => { wakeLock = null; wakeState = "off"; });
+    } catch (_) {
+      wakeLock = null;
+      wakeState = "blocked";
+    }
+  }
+  acquireWakeLock();
+  document.addEventListener("visibilitychange", () => {
+    // The lock is dropped automatically while the page is hidden.
+    if (document.visibilityState === "visible") acquireWakeLock();
+  });
+
+  // ══ Interaction ══════════════════════════════════════════════════════════
+  addEventListener("pointerdown", () => {
+    armFlicker();
+    acquireWakeLock();   // a touch supplies the activation that load time lacks
+  });
+  // Enter fullscreen but never leave it: a tap is also how the flicker strips
+  // are re-armed mid-session, and dropping out of fullscreen every time you did
+  // that would move the whole target between shots. Leave by the system gesture.
+  addEventListener("pointerup", (e) => {
+    if (help.classList.contains("show") || e.target.id === "btn") return;
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
+  });
+
+  document.getElementById("btn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    help.classList.toggle("show");
+  });
+  help.addEventListener("click", () => help.classList.remove("show"));
+})();
+</script>
+</body>
+</html>

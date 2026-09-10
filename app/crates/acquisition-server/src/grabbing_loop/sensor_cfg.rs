@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use acquisition_common::protocol as wire;
+use pylon::cfg::RateControl;
 use pylon::CameraArray;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
@@ -22,6 +23,9 @@ pub(super) struct SensorCfgIterState {
     auto_adjust_duration_secs: u64,
     auto_adjust_minimize_gain: bool,
     auto_adjust_no_boost_framerate: bool,
+    /// Which camera feature the framerate setting has to be written to and read back
+    /// from. Fixed at startup; see [`RateControl`].
+    rate_control: RateControl,
 }
 
 impl SensorCfgIterState {
@@ -29,12 +33,14 @@ impl SensorCfgIterState {
         auto_adjust_duration_secs: u64,
         auto_adjust_minimize_gain: bool,
         auto_adjust_no_boost_framerate: bool,
+        rate_control: RateControl,
     ) -> Self {
         SensorCfgIterState {
             cfg_values: SensorCfgActivity::Unitialized,
             auto_adjust_duration_secs,
             auto_adjust_minimize_gain,
             auto_adjust_no_boost_framerate,
+            rate_control,
         }
     }
 
@@ -123,7 +129,7 @@ fn handle_commands(
                         "set-camera-settings ignored: camera busy".into(),
                     );
                 } else {
-                    match apply_settings(camera_array, settings) {
+                    match apply_settings(camera_array, settings, state.rate_control) {
                         Ok(merged_settings) => {
                             state.cfg_values = SensorCfgActivity::Set(merged_settings);
                             sensor_cfg_ok(evt_tx, message.uuid);
@@ -266,7 +272,7 @@ fn handle_unknown_settings(
     if !matches!(state.cfg_values, SensorCfgActivity::Unknown) {
         return;
     }
-    match sync_sensor_cfg(camera_array) {
+    match sync_sensor_cfg(camera_array, state.rate_control) {
         Ok(s) => state.cfg_values = SensorCfgActivity::Set(s),
         Err(e) => {
             warn!("{e}");
@@ -321,7 +327,7 @@ fn start_auto_adjust(
         auto_whitebalance,
         ..Default::default()
     };
-    match pylon::cfg::begin_auto_adjust(camera_array, &cfg) {
+    match pylon::cfg::begin_auto_adjust(camera_array, &cfg, state.rate_control) {
         Ok(handle) => {
             let prev = match std::mem::replace(&mut state.cfg_values, SensorCfgActivity::Unknown) {
                 SensorCfgActivity::Set(cfg) => cfg,
@@ -366,11 +372,14 @@ fn abort_auto_adjust(
     }
 }
 
-fn sync_sensor_cfg(cameras: &mut CameraArray) -> Result<wire::SensorCfg, String> {
+fn sync_sensor_cfg(
+    cameras: &mut CameraArray,
+    rate_control: RateControl,
+) -> Result<wire::SensorCfg, String> {
     let exposure_us = pylon::cfg::sync_exposure(cameras).map_err(|e| e.to_string())?;
     let gain = pylon::cfg::sync_gain(cameras).map_err(|e| e.to_string())?;
     let white_balance = pylon::cfg::sync_whitebalance(cameras).map_err(|e| e.to_string())?;
-    let framerate = pylon::cfg::sync_framerate(cameras).map_err(|e| e.to_string())?;
+    let framerate = pylon::cfg::sync_framerate(cameras, rate_control).map_err(|e| e.to_string())?;
     Ok(wire::SensorCfg {
         exposure_us: Some(exposure_us),
         gain: Some(gain),
@@ -383,6 +392,7 @@ fn sync_sensor_cfg(cameras: &mut CameraArray) -> Result<wire::SensorCfg, String>
 fn apply_settings(
     cameras: &mut pylon::CameraArray,
     settings: &wire::SensorCfg,
+    rate_control: RateControl,
 ) -> Result<wire::SensorCfg, String> {
     for i in 0..cameras.len() {
         let mut cam = cameras.get_camera(i);
@@ -409,9 +419,9 @@ fn apply_settings(
                 .map_err(|e| e.to_string())?;
         }
         if let Some(v) = settings.framerate {
-            pylon::cfg::set_acquisition_framerate(&mut cam, v)
+            pylon::cfg::set_framerate(&mut cam, v, rate_control)
                 .map_err(|e| e.to_string())?;
         }
     }
-    sync_sensor_cfg(cameras)
+    sync_sensor_cfg(cameras, rate_control)
 }

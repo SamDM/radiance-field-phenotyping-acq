@@ -152,16 +152,53 @@ pub fn enable_ptp(cam: &mut Camera<'_>, priority: u8) -> Result<()> {
     Ok(())
 }
 
-pub fn get_ptp_status(cam: &mut Camera<'_>) -> Result<PtpStatus> {
-    cam.execute_command("PtpDataSetLatch")?;
-    let s = cam.get_feature("PtpStatus")?;
-    PtpStatus::from_str(&s)
+/// Turn PTP off, leaving the camera clock free-running.
+///
+/// `PtpEnable` persists in camera state across process restarts, so opting out of PTP
+/// has to write this explicitly — merely skipping [`enable_ptp`] would leave PTP on
+/// from a previous run.
+pub fn disable_ptp(cam: &mut Camera<'_>) -> Result<()> {
+    cam.set_feature("PtpEnable", "false")?;
+    Ok(())
 }
 
-pub fn get_servo_status(cam: &mut Camera<'_>) -> Result<PtpServoStatus> {
+/// Snapshot of a camera's PTP dataset, taken by [`latch_ptp_data_set`]. Holding this
+/// borrows the camera mutably, so the compiler guarantees `ptp_status` and `servo_status`
+/// (and any other latch-dependent reads added later) refer to the same latch — the camera
+/// can't be re-latched out from under you while a `PtpLatch` is alive.
+pub struct PtpLatch<'a, 'b: 'a>(&'a mut Camera<'b>);
+
+impl PtpLatch<'_, '_> {
+    pub fn ptp_status(&self) -> Result<PtpStatus> {
+        let s = self.0.get_feature("PtpStatus")?;
+        PtpStatus::from_str(&s)
+    }
+
+    pub fn servo_status(&self) -> Result<PtpServoStatus> {
+        let s = self.0.get_feature("PtpServoStatus")?;
+        PtpServoStatus::from_str(&s)
+    }
+
+    /// The camera's own estimate of how far its clock is from the grand master, in
+    /// nanoseconds.
+    ///
+    /// This is what bounds true cross-camera simultaneity: two cameras firing on the
+    /// same PTP grid are physically apart by the *difference* of their offsets, not by
+    /// the difference of their reported timestamps (which are measured on the very
+    /// clocks that are off). Note `PtpServoStatus == Locked` only promises agreement
+    /// within `BslPtpServoLockedThreshold`, 50 µs by default.
+    pub fn offset_from_master_ns(&self) -> Result<i64> {
+        let s = self.0.get_feature("PtpOffsetFromMaster")?;
+        s.parse::<i64>()
+            .map_err(|e| PtpError(format!("PtpOffsetFromMaster parse error: '{s}' ({e})")).into())
+    }
+}
+
+/// Snapshot the camera's PTP dataset. Read `PtpStatus`/`PtpServoStatus` off the returned
+/// [`PtpLatch`] so they refer to exactly the same instant.
+pub fn latch_ptp_data_set<'a, 'b: 'a>(cam: &'a mut Camera<'b>) -> Result<PtpLatch<'a, 'b>> {
     cam.execute_command("PtpDataSetLatch")?;
-    let s = cam.get_feature("PtpServoStatus")?;
-    PtpServoStatus::from_str(&s)
+    Ok(PtpLatch(cam))
 }
 
 /// Returns the deduplicated, sorted list of host interface names for a slice of cameras.

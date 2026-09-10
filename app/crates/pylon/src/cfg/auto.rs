@@ -2,6 +2,8 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, info};
 
+use crate::cfg::config::set_framerate;
+use crate::cfg::sync_trigger::{get_signal_period_us, realized_fps, RateControl};
 use crate::pylon::{Camera, CameraArray};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -157,20 +159,35 @@ pub fn sync_whitebalance(cameras: &mut CameraArray) -> Result<(f64, f64, f64)> {
     Ok((avg_r, avg_g, avg_b))
 }
 
-pub fn sync_framerate(cameras: &mut CameraArray) -> Result<f64> {
+/// Read the acquisition rate off every camera, average it, and write the average back
+/// so all cameras are byte-identical. Returns the realized rate.
+///
+/// Reads whichever feature owns the rate in this `mode` — writing the periodic-signal
+/// period while the cameras are actually free-running (or vice versa) would report a
+/// number that controls nothing.
+pub fn sync_framerate(cameras: &mut CameraArray, mode: RateControl) -> Result<f64> {
     let n = cameras.len();
     let mut sum = 0.0f64;
     for i in 0..n {
         let cam = cameras.get_camera(i);
-        let v = parse_f64(cam.get_feature("AcquisitionFrameRate")?, "AcquisitionFrameRate")?;
-        debug!(camera = i, framerate = v, "framerate reading");
+        let v = match mode {
+            RateControl::PeriodicSignal => realized_fps(get_signal_period_us(&cam)?),
+            RateControl::AcquisitionLimiter => {
+                parse_f64(cam.get_feature("AcquisitionFrameRate")?, "AcquisitionFrameRate")?
+            }
+        };
+        debug!(camera = i, framerate = v, ?mode, "framerate reading");
         sum += v;
     }
     let avg = sum / n as f64;
+    // Round-trip through the mode's own quantization so the value we report is the one
+    // the cameras end up with.
+    let mut realized = avg;
     for i in 0..n {
-        cameras.get_camera(i).set_feature("AcquisitionFrameRate", &format!("{avg}"))?;
+        let mut cam = cameras.get_camera(i);
+        realized = set_framerate(&mut cam, avg, mode)?;
     }
-    Ok(avg)
+    Ok(realized)
 }
 
 /// Handle for an in-progress auto-adjust operation. The caller drives the
@@ -181,12 +198,29 @@ pub fn sync_framerate(cameras: &mut CameraArray) -> Result<f64> {
 pub struct AutoAdjustHandle {
     deadline: Instant,
     confirmed: Vec<[bool; AUTO_FEATURES.len()]>,
-    boost_framerate: bool,
-    saved_framerate_enable: Vec<String>,
-    saved_framerate: Vec<String>,
+    saved_rate: SavedRate,
     tune_exposure: bool,
     tune_gain: bool,
     tune_whitebalance: bool,
+}
+
+/// Period used while boosting under [`RateControl::PeriodicSignal`]: far shorter than
+/// the camera can service, so it delivers frames as fast as it can. Over-triggering is
+/// safe — the camera skips whole periods and stays on the shared grid.
+const BOOST_PERIOD_US: u32 = 10_000;
+
+/// The acquisition-rate settings the framerate boost displaced, so [`finish`] can put
+/// them back. Which variant applies is fixed by the [`RateControl`] in force; keeping
+/// them in one enum makes it impossible to restore the wrong feature.
+///
+/// [`finish`]: AutoAdjustHandle::finish
+enum SavedRate {
+    /// Boost was not requested — nothing to restore.
+    NotBoosted,
+    /// Per-camera `BslPeriodicSignalPeriod`, in microseconds.
+    Period(Vec<u32>),
+    /// Per-camera `AcquisitionFrameRateEnable` / `AcquisitionFrameRate`, verbatim.
+    Limiter { enable: Vec<String>, rate: Vec<String> },
 }
 
 pub enum AutoAdjustTick {
@@ -201,6 +235,7 @@ pub enum AutoAdjustTick {
 pub fn begin_auto_adjust(
     cameras: &mut CameraArray,
     cfg: &AutoAdjustConfig,
+    mode: RateControl,
 ) -> Result<AutoAdjustHandle> {
     let n = cameras.len();
     info!(
@@ -208,18 +243,33 @@ pub fn begin_auto_adjust(
         target_brightness = ?cfg.target_brightness,
         profile = ?cfg.profile,
         n_cameras = n,
+        ?mode,
         "starting auto-adjust",
     );
 
-    let mut saved_framerate_enable: Vec<String> = Vec::new();
-    let mut saved_framerate: Vec<String> = Vec::new();
-    if cfg.boost_framerate {
-        for i in 0..n {
-            let cam = cameras.get_camera(i);
-            saved_framerate_enable.push(cam.get_feature("AcquisitionFrameRateEnable")?);
-            saved_framerate.push(cam.get_feature("AcquisitionFrameRate")?);
+    let saved_rate = if !cfg.boost_framerate {
+        SavedRate::NotBoosted
+    } else {
+        match mode {
+            RateControl::PeriodicSignal => {
+                let mut periods = Vec::with_capacity(n);
+                for i in 0..n {
+                    periods.push(get_signal_period_us(&cameras.get_camera(i))?);
+                }
+                SavedRate::Period(periods)
+            }
+            RateControl::AcquisitionLimiter => {
+                let mut enable = Vec::with_capacity(n);
+                let mut rate = Vec::with_capacity(n);
+                for i in 0..n {
+                    let cam = cameras.get_camera(i);
+                    enable.push(cam.get_feature("AcquisitionFrameRateEnable")?);
+                    rate.push(cam.get_feature("AcquisitionFrameRate")?);
+                }
+                SavedRate::Limiter { enable, rate }
+            }
         }
-    }
+    };
 
     let tune_gain = matches!(cfg.gain, AutoParam::Adjust(_));
     let tune_exposure = matches!(cfg.exposure_us, AutoParam::Adjust(_));
@@ -245,17 +295,23 @@ pub fn begin_auto_adjust(
         if cfg.auto_whitebalance {
             cam.set_feature("BalanceWhiteAuto", "Once")?;
         }
-        if cfg.boost_framerate {
-            cam.set_feature("AcquisitionFrameRateEnable", "false")?;
+        match saved_rate {
+            SavedRate::NotBoosted => {}
+            // The limiter is already off in this mode, so shrinking the period is what
+            // actually raises the rate.
+            SavedRate::Period(_) => {
+                cam.set_feature("BslPeriodicSignalPeriod", &BOOST_PERIOD_US.to_string())?;
+            }
+            SavedRate::Limiter { .. } => {
+                cam.set_feature("AcquisitionFrameRateEnable", "false")?;
+            }
         }
     }
 
     Ok(AutoAdjustHandle {
         deadline: Instant::now() + cfg.timeout,
         confirmed: vec![[false; AUTO_FEATURES.len()]; n],
-        boost_framerate: cfg.boost_framerate,
-        saved_framerate_enable,
-        saved_framerate,
+        saved_rate,
         tune_exposure,
         tune_gain,
         tune_whitebalance: cfg.auto_whitebalance,
@@ -315,11 +371,21 @@ impl AutoAdjustHandle {
     }
 
     fn restore_framerate(&self, cameras: &mut CameraArray) -> Result<()> {
-        if self.boost_framerate {
-            for i in 0..cameras.len() {
-                let mut cam = cameras.get_camera(i);
-                cam.set_feature("AcquisitionFrameRateEnable", &self.saved_framerate_enable[i])?;
-                cam.set_feature("AcquisitionFrameRate", &self.saved_framerate[i])?;
+        match &self.saved_rate {
+            SavedRate::NotBoosted => {}
+            SavedRate::Period(periods) => {
+                for (i, period_us) in periods.iter().enumerate() {
+                    cameras
+                        .get_camera(i)
+                        .set_feature("BslPeriodicSignalPeriod", &period_us.to_string())?;
+                }
+            }
+            SavedRate::Limiter { enable, rate } => {
+                for i in 0..enable.len() {
+                    let mut cam = cameras.get_camera(i);
+                    cam.set_feature("AcquisitionFrameRateEnable", &enable[i])?;
+                    cam.set_feature("AcquisitionFrameRate", &rate[i])?;
+                }
             }
         }
         Ok(())

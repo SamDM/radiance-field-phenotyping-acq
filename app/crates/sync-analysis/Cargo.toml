@@ -1,0 +1,21 @@
+[package]
+name = "sync-analysis"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sync_analysis"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scan-recording"
+path = "src/main.rs"
+
+[dependencies]
+acquisition-common = { path = "../acquisition-common" }
+rxing = { version = "0.7", default-features = false, features = ["image"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+image = { workspace = true }
+rayon = { workspace = true }

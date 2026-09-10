@@ -185,6 +185,9 @@ pub enum Ptp4lStatus {
     Starting,
     Master,
     Failed(String),
+    /// PTP was switched off deliberately (`--no-ptp`), not by a failure. Distinct from
+    /// `Failed` so an intentional opt-out doesn't surface as an error.
+    Disabled,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,10 +207,33 @@ pub enum CameraServoStatus {
     Locked,
 }
 
+/// Clock the camera derives its periodic trigger signal from.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeriodicSignalSource {
+    /// PTP-disciplined: the trigger grid is shared with the other cameras.
+    PtpClock,
+    /// Free-running: the trigger grid is local to this camera.
+    DeviceClock,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct CameraPtpInfo {
     pub ptp: CameraPtpStatus,
     pub servo: CameraServoStatus,
+    /// Clock behind this camera's trigger signal, or `None` when the camera isn't
+    /// running on the periodic-signal trigger at all (free-run fallback).
+    ///
+    /// This flips to `PtpClock` as soon as PTP is *enabled*, tens of seconds before
+    /// the servo locks, so captures are only genuinely synchronized when this is
+    /// `PtpClock` **and** `ptp` is `Slave` **and** `servo` is `Locked`.
+    #[serde(default)]
+    pub signal_source: Option<PeriodicSignalSource>,
+    /// Camera's own estimate of its clock offset from the grand master, in
+    /// nanoseconds. This is what bounds true cross-camera simultaneity — the reported
+    /// frame timestamps are measured on the very clocks that are off, so they look
+    /// better aligned than the captures actually are.
+    #[serde(default)]
+    pub offset_from_master_ns: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
