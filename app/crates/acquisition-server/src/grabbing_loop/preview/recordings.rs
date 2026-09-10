@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use acquisition_common::debayer::debayer_crop;
+use acquisition_common::debayer::{debayer_crop, debayer_half};
 use acquisition_common::protocol as wire;
 use acquisition_common::{AnyFrame, Bayer, Color, Frame};
 use image::imageops::FilterType;
@@ -560,7 +560,7 @@ pub(super) fn make_jpeg_previews(
                     let zoom = zoom_requests
                         .get(frame.camera_name())
                         .map(|&rel| extract_zoom(frame, rel, zoom_size));
-                    let frame_small = resize_frame(&frame.clone().into_color());
+                    let frame_small = preview_frame(frame);
                     let mut compressor = Compressor::new().expect("turbojpeg compressor");
                     compressor.set_quality(50).expect("set jpeg quality");
                     let jpeg = compressor
@@ -588,18 +588,33 @@ pub(super) fn make_jpeg_previews(
     })
 }
 
-fn resize_frame(frame: &Frame<Color>) -> Frame<Color> {
+/// Build the downscaled RGB image behind one preview frame.
+///
+/// Bayer frames take a shortcut: each 2×2 quad collapses straight to one RGB pixel via
+/// `debayer_half`, and only that half-resolution image is resized the rest of the way.
+/// Debayering at full resolution first — which is what this used to do — interpolates
+/// roughly 64× more pixels than a /8 preview keeps, and needed a full copy of the frame
+/// to do it. The mosaic itself is never resized; that would scramble the Bayer phase
+/// (see `debayer_half`).
+fn preview_frame(frame: &AnyFrame) -> Frame<Color> {
     const SCALE: u32 = 8;
     let w = (frame.width() / SCALE).max(1);
     let h = (frame.height() / SCALE).max(1);
-    let img = frame.image();
+
+    let rgb: RgbImage = match frame {
+        AnyFrame::Bayer(f) => debayer_half(&f.data, f.width, f.height),
+        // Gray and Color carry a complete value at every pixel already: no mosaic to
+        // preserve, and the conversion is cheap next to a debayer either way.
+        other => other.clone().into_color().into_data(),
+    };
+
     Frame::new(
-        image::imageops::resize(&img, w, h, FilterType::Triangle).into_raw(),
+        image::imageops::resize(&rgb, w, h, FilterType::Triangle).into_raw(),
         w,
         h,
-        frame.camera_timestamp_ns,
-        frame.host_timestamp,
-        frame.camera_name.clone(),
+        frame.camera_timestamp_ns(),
+        frame.host_datetime_local(),
+        frame.camera_name().to_owned(),
     )
 }
 

@@ -51,6 +51,45 @@ pub fn debayer(src: &[u8], w: u32, h: u32) -> RgbImage {
     out
 }
 
+/// Collapse each 2×2 RGGB quad to a single RGB pixel, producing a `w/2`×`h/2` image.
+///
+/// This is the only phase-correct way to shrink a Bayer mosaic. Resizing the mosaic
+/// itself blends across color-filter sites, which destroys the RGGB phase and leaves a
+/// buffer that is no longer debayerable at all. Building every output pixel from exactly
+/// one complete quad sidesteps that: no interpolation, no false color, and the result is
+/// a true RGB image that can then be resized like any other.
+///
+/// Cheaper than `debayer` by much more than the 4× pixel count suggests — there is no
+/// neighbourhood gather and no edge clamping, just four sequential reads per output
+/// pixel. Use it when the consumer wants a downscaled image anyway (previews, detection);
+/// use `debayer` when full resolution is the point.
+///
+/// Odd widths and heights truncate: a trailing row or column has no complete quad.
+pub fn debayer_half(src: &[u8], w: u32, h: u32) -> RgbImage {
+    let wu = w as usize;
+    let out_w = wu / 2;
+    let out_h = h as usize / 2;
+    if out_w == 0 || out_h == 0 {
+        return ImageBuffer::new(0, 0);
+    }
+    let mut out = ImageBuffer::new(out_w as u32, out_h as u32);
+    out.as_mut()
+        .par_chunks_mut(out_w * 3)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            // RGGB: even source rows are `R G R G …`, odd rows are `G B G B …`.
+            let top = &src[(2 * oy) * wu..][..wu];
+            let bot = &src[(2 * oy + 1) * wu..][..wu];
+            for ox in 0..out_w {
+                let x = 2 * ox;
+                row[ox * 3] = top[x];
+                row[ox * 3 + 1] = avg2(top[x + 1], bot[x]);
+                row[ox * 3 + 2] = bot[x + 1];
+            }
+        });
+    out
+}
+
 /// Debayer only the `cw`×`ch` sub-region with top-left at `(x0, y0)` of a full
 /// `w`×`h` RGGB image. Uses absolute source coordinates so the Bayer phase and
 /// edge clamping match a full-frame `debayer`.
@@ -89,6 +128,86 @@ fn avg4(a: u8, b: u8, c: u8, d: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a `w`×`h` RGGB mosaic where every site carries its channel's constant value.
+    fn flat_mosaic(w: u32, h: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
+        (0..h)
+            .flat_map(|y| {
+                (0..w).map(move |x| match (y % 2, x % 2) {
+                    (0, 0) => r,
+                    (0, 1) => g,
+                    (1, 0) => g,
+                    _ => b,
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn half_recovers_flat_colour_exactly() {
+        let (w, h) = (16u32, 12u32);
+        let src = flat_mosaic(w, h, 10, 200, 30);
+        let out = debayer_half(&src, w, h);
+        assert_eq!(out.dimensions(), (w / 2, h / 2));
+        for px in out.pixels() {
+            assert_eq!(px.0, [10, 200, 30]);
+        }
+    }
+
+    #[test]
+    fn half_reads_the_correct_quad_sites() {
+        // A mosaic whose every byte is its own linear index makes a wrong offset by even
+        // one site immediately visible.
+        let (w, h) = (8u32, 4u32);
+        let src: Vec<u8> = (0..(w * h) as u8).collect();
+        let out = debayer_half(&src, w, h);
+        // Quad (1, 0) occupies source pixels (2,0),(3,0),(2,1),(3,1) = 2, 3, 10, 11.
+        assert_eq!(out.get_pixel(1, 0).0, [2, (3 + 10) / 2, 11]);
+        // Quad (0, 1) occupies (0,2),(1,2),(0,3),(1,3) = 16, 17, 24, 25.
+        assert_eq!(out.get_pixel(0, 1).0, [16, (17 + 24) / 2, 25]);
+    }
+
+    #[test]
+    fn half_tracks_the_full_debayer_on_real_content() {
+        // The preview path swaps `debayer` for `debayer_half`, so the two must agree on
+        // what the scene looks like. Compare per-channel means over a smooth gradient:
+        // they sample the same mosaic differently, so demand closeness, not equality.
+        let (w, h) = (64u32, 48u32);
+        let src: Vec<u8> = (0..(w * h))
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                ((x * 3 + y * 2) % 256) as u8
+            })
+            .collect();
+
+        let full = debayer(&src, w, h);
+        let half = debayer_half(&src, w, h);
+
+        for ch in 0..3 {
+            let mean = |img: &RgbImage| -> f64 {
+                img.pixels().map(|p| p.0[ch] as f64).sum::<f64>() / img.pixels().len() as f64
+            };
+            let (a, b) = (mean(&full), mean(&half));
+            assert!(
+                (a - b).abs() < 8.0,
+                "channel {ch} means diverge: full {a:.2} vs half {b:.2}"
+            );
+        }
+    }
+
+    #[test]
+    fn half_truncates_incomplete_quads() {
+        // Odd dimensions have a trailing row/column with no complete quad.
+        let (w, h) = (7u32, 5u32);
+        let src = flat_mosaic(w, h, 1, 2, 3);
+        assert_eq!(debayer_half(&src, w, h).dimensions(), (3, 2));
+    }
+
+    #[test]
+    fn half_handles_images_too_small_for_a_quad() {
+        assert_eq!(debayer_half(&[9], 1, 1).dimensions(), (0, 0));
+        assert_eq!(debayer_half(&[9, 9], 2, 1).dimensions(), (0, 0));
+    }
 
     #[test]
     fn crop_matches_full_debayer() {
