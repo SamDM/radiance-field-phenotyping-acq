@@ -44,6 +44,17 @@ mod stub;
 #[cfg(not(feature = "aruco-auto-record"))]
 pub use stub::AutoRecordWatcher;
 
+/// Check that every configured selector names a real family and an in-range id.
+///
+/// Exists so a bad configuration can be rejected during argument validation, before any
+/// socket is bound or camera opened. The watcher performs the same resolution when it is
+/// built, but that happens on the acquisition thread — far too late for the operator to
+/// notice that the rig will never trigger.
+#[cfg(feature = "aruco-auto-record")]
+pub fn validate_markers(selectors: &[MarkerSelector]) -> Result<(), MarkerCfgError> {
+    markers::merge(selectors).map(|_| ())
+}
+
 /// What the watcher wants the recording state machine to do.
 ///
 /// Declared unconditionally so the call sites in the acquisition loop type-check

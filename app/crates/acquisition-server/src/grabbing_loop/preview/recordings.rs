@@ -15,6 +15,7 @@ use turbojpeg::{Compressor, Image, PixelFormat as TjPixelFormat, Subsamp};
 use uuid::Uuid;
 
 use crate::utils::zipper::{StreamZipper, ZipError, ZipErrorReason, Zipped};
+use acquisition_server::aruco::{AutoAction, AutoRecordWatcher, PollCtx};
 
 fn accept_cmd(evt_tx: &broadcast::Sender<wire::ServerMessage>, cmd_uuid: Uuid, reason: &str) {
     info!("{reason}");
@@ -39,6 +40,10 @@ enum AcquisitionActivity {
 
 pub(super) struct RecordingsIterState {
     activity: AcquisitionActivity,
+    /// Whether the current recording was started by the marker watcher rather than a
+    /// client. Only auto-started recordings may be auto-stopped.
+    auto_started: bool,
+    watcher: AutoRecordWatcher,
     n_cameras: usize,
     zipper: StreamZipper<Frame<Bayer>>,
     output_dir_template: String,
@@ -56,10 +61,13 @@ impl RecordingsIterState {
         max_n_frames: u32,
         frame_format: crate::FrameFormat,
         zoom_size: u32,
+        watcher: AutoRecordWatcher,
     ) -> Self {
         let library = library::RecordingLibrary::new(&output_dir_template);
         RecordingsIterState {
             activity: AcquisitionActivity::Idle,
+            auto_started: false,
+            watcher,
             n_cameras,
             zipper: StreamZipper::new(n_cameras, grouper_buffer_len),
             output_dir_template,
@@ -115,6 +123,7 @@ impl RecordingsIterState {
         };
 
         self.activity = AcquisitionActivity::Idle;
+        self.auto_started = false;
 
         if groups_saved == 0 {
             warn!("recording not saved: 0 frames captured");
@@ -179,7 +188,7 @@ pub(super) fn iteration(
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     enum RecordingCommand {
-        Start,
+        Start { auto: bool },
         Stop,
     }
 
@@ -199,7 +208,7 @@ pub(super) fn iteration(
     for message in messages {
         match &message.command {
             wire::ClientCommand::StartRecording => {
-                recording_cmds.push((message.uuid, RecordingCommand::Start));
+                recording_cmds.push((message.uuid, RecordingCommand::Start { auto: false }));
             }
             wire::ClientCommand::StopRecording => {
                 recording_cmds.push((message.uuid, RecordingCommand::Stop));
@@ -230,12 +239,40 @@ pub(super) fn iteration(
         }
     }
 
+    // Let the marker watcher have its say, but only if no client asked for something this
+    // same iteration — a live command always wins over an inferred one.
+    //
+    // Synthesising a command rather than assigning to `state.activity` is deliberate: it
+    // reuses the whole state machine below, including the busy guard, the already-recording
+    // rejection, `finish_recording`'s verification and metadata write, and the
+    // auto-select-on-finish. The synthetic UUID belongs to no client, and clients ignore
+    // acks for UUIDs they never sent, so it is inert on the wire.
+    let auto_action = state.watcher.poll(PollCtx {
+        recording: state.is_recording(),
+        auto_started: state.auto_started,
+        active: !in_replay && !is_busy,
+    });
+    if recording_cmds.is_empty() {
+        if let Some(action) = auto_action {
+            info!(reason = %action.reason(), "auto-record triggered");
+            let _ = evt_tx.send(wire::ServerMessage::notice(
+                wire::NoticeSeverity::Info,
+                format!("auto-record: {}", action.reason()),
+            ));
+            let cmd = match action {
+                AutoAction::Start { .. } => RecordingCommand::Start { auto: true },
+                AutoAction::Stop { .. } => RecordingCommand::Stop,
+            };
+            recording_cmds.push((Uuid::new_v4(), cmd));
+        }
+    }
+
     for (uuid, _) in &recording_cmds[..recording_cmds.len().saturating_sub(1)] {
         reject_cmd(evt_tx, *uuid, "superseded by newer recording command");
     }
     if let Some((cmd_uuid, recording_cmd)) = recording_cmds.pop() {
         match recording_cmd {
-            RecordingCommand::Start => {
+            RecordingCommand::Start { auto } => {
                 if is_busy {
                     reject_cmd(evt_tx, cmd_uuid, "start ignored: camera busy");
                 } else if matches!(state.activity, AcquisitionActivity::Idle) {
@@ -244,6 +281,7 @@ pub(super) fn iteration(
                         start,
                         groups_saved: 0,
                     };
+                    state.auto_started = auto;
                     accept_cmd(evt_tx, cmd_uuid, "recording started");
                 } else {
                     reject_cmd(evt_tx, cmd_uuid, "start ignored: already recording");
@@ -319,6 +357,12 @@ pub(super) fn iteration(
         Some(Ok(grab)) => {
             let cam_idx = grab.camera_index();
             let frame = bayer_frame_from_grab(&grab);
+            // Borrows the frame, so it has to happen before the zipper takes ownership.
+            // Cheap by construction: `offer` rejects on two integer tests unless this is
+            // the one frame it wants, and never blocks.
+            if !in_replay && !is_busy {
+                state.watcher.offer(&frame, cam_idx);
+            }
             let ts = frame.camera_timestamp_ns();
             for result in state.zipper.push(frame, cam_idx, ts) {
                 let saved = match process_grouped_frames_result(

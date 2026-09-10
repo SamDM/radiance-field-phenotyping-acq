@@ -1,3 +1,4 @@
+use acquisition_server::aruco;
 use clap::Parser;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -71,6 +72,8 @@ impl FrameFormat {
     }
 }
 
+/// Multi-camera acquisition server: grabs synchronized frames and records them to disk,
+/// driven over a control WebSocket.
 #[derive(Parser)]
 pub struct Args {
     /// Per-camera frame limit for a single recording. A recording auto-stops
@@ -176,6 +179,185 @@ pub struct Args {
     /// crop symmetric around the zoomed pixel.
     #[arg(long, default_value_t = DEFAULT_ZOOM_SIZE, value_parser = parse_zoom_size)]
     pub zoom_size: u32,
+
+    #[cfg(feature = "aruco-auto-record")]
+    #[command(flatten)]
+    pub aruco: AutoRecordArgs,
+}
+
+// Marker-driven recording control. Present only under the `aruco-auto-record` feature,
+// and inert unless `--aruco-markers` is given at least once.
+//
+// Note these carry no doc comment: clap takes a flattened struct's doc comment as the
+// whole command's `about`, which would replace the server's own description.
+#[cfg(feature = "aruco-auto-record")]
+#[derive(clap::Args)]
+#[command(next_help_heading = "ArUco auto-record")]
+pub struct AutoRecordArgs {
+    /// Markers that start a recording, as `FAMILY:id,id,...` — for example
+    /// `DICT_5X5_250:3,30,22`. Repeat the flag to mix families. Seeing any listed marker
+    /// starts a recording; the recording stops once the marker that started it has been
+    /// out of view for `--aruco-stop-after` consecutive checks.
+    ///
+    /// An unknown family name is rejected at startup with the list of valid names.
+    #[arg(long, value_parser = parse_marker_selector)]
+    pub aruco_markers: Vec<aruco::MarkerSelector>,
+
+    /// Cameras to watch, comma-separated. Defaults to every camera, examined round-robin.
+    /// Narrowing this to the cameras that can actually see the marker station cuts the
+    /// time to trigger proportionally.
+    #[arg(long, value_delimiter = ',')]
+    pub aruco_cameras: Option<Vec<usize>>,
+
+    /// Minimum milliseconds between detector dispatches.
+    #[arg(long, default_value_t = aruco::DEFAULT_INTERVAL.as_millis() as u64)]
+    pub aruco_interval_ms: u64,
+
+    /// Quad stride for the Bayer downscale: the detector sees `width/(2k)` by
+    /// `height/(2k)`. Larger is cheaper but shrinks the marker; aim to keep it at least
+    /// 30 px across in that downscaled image.
+    #[arg(long, default_value_t = aruco::DEFAULT_DOWNSCALE, value_parser = clap::value_parser!(u32).range(1..=16))]
+    pub aruco_downscale: u32,
+
+    /// How the mosaic is reduced to grayscale. `green` is cheaper and, at large
+    /// downscales, more reliable; `box` antialiases and suppresses noise.
+    #[arg(long, value_enum, default_value_t = aruco::DownscaleMode::Green)]
+    pub aruco_downscale_mode: aruco::DownscaleMode,
+
+    /// Sightings required within the window, on one camera, before starting.
+    #[arg(long, default_value_t = aruco::DEFAULT_CONFIRMATIONS)]
+    pub aruco_confirmations: u8,
+
+    /// Length of the per-camera sighting window.
+    #[arg(long, default_value_t = aruco::DEFAULT_WINDOW)]
+    pub aruco_window: u8,
+
+    /// Consecutive checks without the marker, on the camera that started the recording,
+    /// before stopping.
+    #[arg(long, default_value_t = aruco::DEFAULT_STOP_AFTER)]
+    pub aruco_stop_after: u32,
+
+    /// Debounce in seconds after any automatic start or stop.
+    #[arg(long, default_value_t = aruco::DEFAULT_COOLDOWN.as_secs())]
+    pub aruco_cooldown_secs: u64,
+
+    /// Adaptive-threshold window size; must be odd. The detector's own default sweeps
+    /// three window sizes, tripling the cost for no benefit on large markers.
+    #[arg(long, default_value_t = aruco::DEFAULT_THRESH_WIN)]
+    pub aruco_thresh_win: u32,
+
+    /// Minimum contour size, as a fraction of the larger image dimension.
+    #[arg(long, default_value_t = aruco::DEFAULT_MIN_PERIMETER_RATE)]
+    pub aruco_min_perimeter_rate: f64,
+}
+
+/// Parse one `FAMILY:id,id,...` selector. Family names are validated later, against the
+/// dictionary list, so that the error can enumerate what is valid.
+#[cfg(feature = "aruco-auto-record")]
+fn parse_marker_selector(s: &str) -> Result<aruco::MarkerSelector, String> {
+    let (family, ids) = s
+        .split_once(':')
+        .ok_or_else(|| format!("expected `FAMILY:id,id,...`, got `{s}`"))?;
+    let family = family.trim();
+    if family.is_empty() {
+        return Err(format!("missing family name in `{s}`"));
+    }
+    let ids = ids
+        .split(',')
+        .map(|id| {
+            let id = id.trim();
+            id.parse::<usize>()
+                .map_err(|_| format!("`{id}` is not a valid marker id"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if ids.is_empty() {
+        return Err(format!("no marker ids given in `{s}`"));
+    }
+    Ok(aruco::MarkerSelector { family: family.to_string(), ids })
+}
+
+impl Args {
+    /// Assemble the watcher configuration.
+    ///
+    /// Without the feature there is nothing to configure, and the default is inert — which
+    /// is what keeps the call site in the acquisition loop free of `#[cfg]`.
+    #[cfg(feature = "aruco-auto-record")]
+    pub fn auto_record_cfg(&self) -> aruco::AutoRecordCfg {
+        aruco::AutoRecordCfg {
+            markers: self.aruco.aruco_markers.clone(),
+            cameras: self.aruco.aruco_cameras.clone(),
+            interval: std::time::Duration::from_millis(self.aruco.aruco_interval_ms),
+            downscale: self.aruco.aruco_downscale,
+            downscale_mode: self.aruco.aruco_downscale_mode,
+            confirmations: self.aruco.aruco_confirmations,
+            window: self.aruco.aruco_window,
+            stop_after: self.aruco.aruco_stop_after,
+            cooldown: std::time::Duration::from_secs(self.aruco.aruco_cooldown_secs),
+            thresh_win: self.aruco.aruco_thresh_win,
+            min_perimeter_rate: self.aruco.aruco_min_perimeter_rate,
+        }
+    }
+
+    #[cfg(not(feature = "aruco-auto-record"))]
+    pub fn auto_record_cfg(&self) -> aruco::AutoRecordCfg {
+        aruco::AutoRecordCfg::default()
+    }
+
+    /// Cross-field validation that no single `value_parser` can do. Called once at
+    /// startup so a misconfiguration fails immediately rather than silently never firing.
+    #[cfg(feature = "aruco-auto-record")]
+    pub fn validate_aruco(&self) -> Result<(), String> {
+        let a = &self.aruco;
+        if a.aruco_markers.is_empty() {
+            // Nothing configured is a valid, inert configuration; the rest is moot.
+            return Ok(());
+        }
+        // Resolve the selectors here rather than leaving it to the watcher, which is built
+        // on the acquisition thread once sockets are bound and cameras opened. A typo in a
+        // family name should stop the launch, not quietly produce a rig that never fires.
+        aruco::validate_markers(&a.aruco_markers).map_err(|e| e.to_string())?;
+        if a.aruco_window == 0 || a.aruco_window > 8 {
+            return Err(format!("--aruco-window must be 1..=8 (got {})", a.aruco_window));
+        }
+        if a.aruco_confirmations == 0 || a.aruco_confirmations > a.aruco_window {
+            return Err(format!(
+                "--aruco-confirmations must be 1..={} (got {})",
+                a.aruco_window, a.aruco_confirmations
+            ));
+        }
+        if a.aruco_stop_after == 0 {
+            return Err("--aruco-stop-after must be at least 1".to_string());
+        }
+        if a.aruco_thresh_win < 3 || a.aruco_thresh_win % 2 == 0 {
+            return Err(format!(
+                "--aruco-thresh-win must be an odd number >= 3 (got {})",
+                a.aruco_thresh_win
+            ));
+        }
+        if !(0.0..=1.0).contains(&a.aruco_min_perimeter_rate) {
+            return Err(format!(
+                "--aruco-min-perimeter-rate must be within 0.0..=1.0 (got {})",
+                a.aruco_min_perimeter_rate
+            ));
+        }
+        if let Some(cams) = &a.aruco_cameras {
+            if cams.is_empty() {
+                return Err("--aruco-cameras was given but lists no cameras".to_string());
+            }
+            if let Some(&bad) = cams.iter().find(|&&c| c >= self.n_cameras) {
+                return Err(format!(
+                    "--aruco-cameras names camera {bad}, but only {} are configured",
+                    self.n_cameras
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(feature = "aruco-auto-record"))]
+    pub fn validate_aruco(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +396,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args = Args::parse();
+    // Fail before opening any camera: a rig that starts but can never trigger is worse
+    // than one that refuses to start.
+    args.validate_aruco()?;
 
     plumbing::start_server(args).await
 }

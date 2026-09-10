@@ -31,6 +31,13 @@ pub fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (camera_array, rate_control, _pylon_guard) = start_cameras(&args)?;
 
+    // Built before anything else touches the cameras: a bad marker configuration is a
+    // startup failure, not something to discover hours into an unattended run.
+    let watcher = acquisition_server::aruco::AutoRecordWatcher::new(
+        &args.auto_record_cfg(),
+        args.n_cameras,
+    )?;
+
     let mut server_state = MutableServerState {
         camera_array,
         ptp_state: ptp::PtpIterState::new(
@@ -51,6 +58,7 @@ pub fn run(
             args.frames,
             args.frame_format,
             args.zoom_size,
+            watcher,
         ),
         prev_wire_status: None,
     };
