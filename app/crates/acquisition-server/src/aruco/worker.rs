@@ -42,6 +42,8 @@ pub struct DetectOutcome {
 /// Corner refinement stays off: only IDs are wanted, never geometry.
 pub fn detector_params(thresh_win: u32, min_perimeter_rate: f64) -> DetectorParams {
     DetectorParams {
+        // One pass, not the detector's default three. See `DEFAULT_THRESH_WIN` for how
+        // to put the sweep back if detection on the rig turns out to need it.
         adaptive_thresh_win_size_min: thresh_win,
         adaptive_thresh_win_size_max: thresh_win,
         min_marker_perimeter_rate: min_perimeter_rate,

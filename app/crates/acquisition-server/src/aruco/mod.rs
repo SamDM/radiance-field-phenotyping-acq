@@ -36,9 +36,6 @@ mod trigger;
 #[cfg(feature = "aruco-auto-record")]
 mod worker;
 
-#[cfg(all(test, feature = "aruco-auto-record"))]
-mod e2e_tests;
-
 #[cfg(feature = "aruco-auto-record")]
 pub use imp::AutoRecordWatcher;
 
@@ -126,7 +123,18 @@ pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(5);
 ///
 /// The detector's own default sweeps `{3, 13, 23}`, running the full threshold and
 /// contour pipeline three times per frame. Pinning one window is the single biggest
-/// speed lever available.
+/// speed lever available, and 13 is the middle of that sweep.
+///
+/// # Restoring the sweep
+///
+/// If the rig turns out to need it — markers missed under uneven lighting, where no
+/// single window suits both the lit and shaded parts of the frame — put the range back in
+/// [`worker::detector_params`]: raise `adaptive_thresh_win_size_max` above `_min` and set
+/// `adaptive_thresh_win_size_step`. Cost is linear in the number of steps, since each one
+/// is a full threshold-and-contour pass over the image, so a `{3, 13, 23}` sweep triples
+/// the ~5 ms measured by `examples/aruco_bench.rs`. That is still affordable at the
+/// default interval; it is deliberately not the default because it buys nothing on
+/// evenly lit synthetic scenes, and the rig has not yet said otherwise.
 pub const DEFAULT_THRESH_WIN: u32 = 13;
 /// Default contour size floor, as a fraction of the larger image dimension.
 pub const DEFAULT_MIN_PERIMETER_RATE: f64 = 0.03;

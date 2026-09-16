@@ -1,5 +1,9 @@
 //! End-to-end tests for the watcher, with no cameras and no Pylon involvement.
 //!
+//! An integration test rather than a unit one: it drives the watcher entirely through
+//! its public surface, exactly as the acquisition loop does, so nothing here can reach
+//! into internals the loop could not. Gated by `required-features` in `Cargo.toml`.
+//!
 //! Everything else in this module is tested in isolation: the downscalers against
 //! synthetic mosaics, the trigger against synthetic detections. These tests join the
 //! pieces — a full-resolution RGGB mosaic goes in one end and an [`AutoAction`] comes out
@@ -21,8 +25,10 @@ use arucotools::dictionaries::predefined;
 use image::GrayImage;
 use time::OffsetDateTime;
 
-use super::synth;
-use super::{AutoAction, AutoRecordCfg, AutoRecordWatcher, MarkerSelector, PollCtx};
+use acquisition_server::aruco::synth;
+use acquisition_server::aruco::{
+    AutoAction, AutoRecordCfg, AutoRecordWatcher, MarkerSelector, PollCtx,
+};
 
 /// Small enough to keep the test fast, large enough to stay realistic.
 const W: u32 = 1024;

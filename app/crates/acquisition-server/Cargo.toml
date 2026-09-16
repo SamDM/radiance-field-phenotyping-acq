@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "acquisition-server"
 path = "src/main.rs"
 
+[[test]]
+name = "aruco_e2e"
+required-features = ["aruco-auto-record"]
+
 [[example]]
 name = "aruco_bench"
 required-features = ["aruco-auto-record"]
