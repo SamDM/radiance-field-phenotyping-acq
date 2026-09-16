@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use acquisition_common::downscale::{bayer_rggb_box_average, bayer_rggb_green_subsample};
 use acquisition_common::{Bayer, Frame};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::markers;
 use super::trigger::{TriggerCfg, TriggerState};
@@ -83,6 +83,18 @@ impl AutoRecordWatcher {
         // threshold-and-contour pipeline runs per detection cycle.
         let n_markers: usize = families.iter().map(|f| f.n_markers()).sum();
         let n_passes = families.len();
+
+        // Overlapping dictionaries mean two configured names can denote one physical
+        // marker. Triggering is unaffected, but detections of it can only be reported
+        // under one name, so say which — otherwise the logs name a marker the operator
+        // never configured.
+        for alias in families.iter().flat_map(|f| f.aliases()) {
+            warn!(
+                reported = %format!("{}:{}", alias.reported.family, alias.reported.id),
+                also_configured_as = %format!("{}:{}", alias.also.family, alias.also.id),
+                "two configured markers are the same pattern; reporting the first"
+            );
+        }
 
         // Capacity 1 with `try_send`: a busy worker means the frame is dropped, never
         // queued. A frame that waited in a queue cannot answer "is the marker there now?".

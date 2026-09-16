@@ -74,9 +74,8 @@ fn fast_params() -> DetectorParams {
 
 /// Build the detector's actual input: a full-resolution mosaic reduced by `k`.
 fn detector_input(marker_px: u32, k: u32, box_mode: bool) -> GrayImage {
-    let marker = synth::marker_image(&predefined::DICT_5X5_250, MARKER_ID, marker_px)
+    let scene = synth::scene_with_marker(SENSOR_W, SENSOR_H, &predefined::DICT_5X5_250, MARKER_ID, marker_px)
         .expect("render marker");
-    let scene = synth::scene_with_marker(SENSOR_W, SENSOR_H, &marker);
     let mosaic = synth::gray_to_rggb_mosaic(&scene);
     if box_mode {
         bayer_rggb_box_average(&mosaic, SENSOR_W, SENSOR_H, k)
@@ -122,8 +121,9 @@ fn main() {
 
     // ---- 2. Downscale cost, which runs on the acquisition thread ----
     println!("\n== downscale cost (acquisition thread) ==");
-    let marker = synth::marker_image(&predefined::DICT_5X5_250, MARKER_ID, marker_px).unwrap();
-    let scene = synth::scene_with_marker(SENSOR_W, SENSOR_H, &marker);
+    let scene =
+        synth::scene_with_marker(SENSOR_W, SENSOR_H, &predefined::DICT_5X5_250, MARKER_ID, marker_px)
+            .unwrap();
     let mosaic = synth::gray_to_rggb_mosaic(&scene);
     for k in [2u32, 3, 4] {
         for (name, boxed) in [("green", false), ("box", true)] {

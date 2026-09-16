@@ -43,8 +43,9 @@ fn frame_from_scene(scene: &GrayImage) -> Frame<Bayer> {
 
 /// A frame showing the marker at `marker_px`, and one showing nothing.
 fn frames(marker_px: u32) -> (Frame<Bayer>, Frame<Bayer>) {
-    let marker = synth::marker_image(&predefined::DICT_5X5_250, ID, marker_px).unwrap();
-    let present = frame_from_scene(&synth::scene_with_marker(W, H, &marker));
+    let present = frame_from_scene(
+        &synth::scene_with_marker(W, H, &predefined::DICT_5X5_250, ID, marker_px).unwrap(),
+    );
     let absent = frame_from_scene(&synth::empty_scene(W, H));
     (present, absent)
 }
@@ -134,8 +135,9 @@ fn an_empty_scene_never_triggers() {
 /// doing its job.
 #[test]
 fn an_unconfigured_marker_of_the_same_family_does_not_trigger() {
-    let other = synth::marker_image(&predefined::DICT_5X5_250, ID + 1, 240).unwrap();
-    let frame = frame_from_scene(&synth::scene_with_marker(W, H, &other));
+    let frame = frame_from_scene(
+        &synth::scene_with_marker(W, H, &predefined::DICT_5X5_250, ID + 1, 240).unwrap(),
+    );
     let mut w = AutoRecordWatcher::new(&cfg(1), 1).unwrap();
     assert_eq!(pump(&mut w, &frame, 0, idle(), 200), None);
 }

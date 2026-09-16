@@ -28,6 +28,24 @@
 //!
 //! The catch is that `MarkerCorners::id` is an *index into the code list*, not the marker
 //! ID. [`MergedFamily::resolve`] maps it back.
+//!
+//! # When two configured markers are the same marker
+//!
+//! Merging can be handed the same codeword twice under different names, because the
+//! predefined dictionaries overlap. `DICT_4X4_50` is a prefix of `DICT_4X4_100`, which is
+//! a prefix of `DICT_4X4_250`, and so on — so `DICT_4X4_50:4` and `DICT_4X4_250:4` are one
+//! physical card with two names. Across every predefined family there is exactly one
+//! overlap where the *ids* also differ: `DICT_4X4_1000:854` is the same pattern as
+//! `DICT_APRILTAG_16H5:18`. (`no_unexpected_cross_family_collisions` pins that, so a
+//! library update which changes it fails loudly rather than quietly.)
+//!
+//! None of this can trigger the wrong recording — a detection of a shared codeword means
+//! a configured marker was seen either way, which is the only thing the trigger asks. It
+//! only makes the *reported* name ambiguous. So a repeated codeword is stored once, the
+//! first configured name wins, and the collapsed name is kept in [`MergedFamily::aliases`]
+//! for the startup log. Storing it twice would be worse than cosmetic: the identification
+//! loop would compare every candidate against the same pattern twice, and only ever
+//! resolve to the first.
 
 use std::collections::BTreeMap;
 
@@ -42,12 +60,22 @@ pub struct Hit {
     pub id: usize,
 }
 
+/// Two configured markers that turned out to be the same codeword.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Alias {
+    /// The identity detections of this codeword will be reported under.
+    pub reported: Hit,
+    /// The other name the operator gave the same physical marker.
+    pub also: Hit,
+}
+
 /// One detector pass: a synthetic family plus the mapping back to real marker identities.
 #[derive(Debug)]
 pub struct MergedFamily {
     family: OwnedMarkerFamily,
     /// Parallel to `family.codes`, so a detection's index maps straight through.
     origins: Vec<Hit>,
+    aliases: Vec<Alias>,
 }
 
 impl MergedFamily {
@@ -60,9 +88,14 @@ impl MergedFamily {
         self.origins.get(index)
     }
 
-    /// How many configured markers this pass looks for.
+    /// How many distinct codewords this pass looks for.
     pub fn n_markers(&self) -> usize {
         self.origins.len()
+    }
+
+    /// Configured markers that collapsed onto an earlier one's codeword.
+    pub fn aliases(&self) -> &[Alias] {
+        &self.aliases
     }
 }
 
@@ -72,12 +105,23 @@ pub fn known_family_names() -> Vec<&'static str> {
     predefined::ALL.iter().map(|(name, _)| *name).collect()
 }
 
+/// One grid geometry's worth of accumulated selectors.
+#[derive(Default)]
+struct Group {
+    /// Running minimum over the members; `None` until the first member joins.
+    nbits_hamming: Option<usize>,
+    codes: Vec<u64>,
+    /// Parallel to `codes`.
+    origins: Vec<Hit>,
+    aliases: Vec<Alias>,
+}
+
 /// Validate selectors and group them into one merged family per grid geometry.
 pub fn merge(selectors: &[MarkerSelector]) -> Result<Vec<MergedFamily>, MarkerCfgError> {
     // BTreeMap keeps the output order stable across runs, which keeps startup logs
     // and test expectations reproducible. Keyed on grid size; the group's hamming
     // distance is the running minimum over its members.
-    let mut groups: BTreeMap<usize, (usize, Vec<u64>, Vec<Hit>)> = BTreeMap::new();
+    let mut groups: BTreeMap<usize, Group> = BTreeMap::new();
 
     for selector in selectors {
         let family = predefined::get_by_name(&selector.family).ok_or_else(|| {
@@ -96,31 +140,44 @@ pub fn merge(selectors: &[MarkerSelector]) -> Result<Vec<MergedFamily>, MarkerCf
                     n_codes: codes.len(),
                 });
             }
-            let entry = groups
-                .entry(family.nbits_side_pattern)
-                .or_insert_with(|| (family.nbits_hamming, Vec::new(), Vec::new()));
-            entry.0 = entry.0.min(family.nbits_hamming);
+            let group = groups.entry(family.nbits_side_pattern).or_default();
+            group.nbits_hamming = Some(match group.nbits_hamming {
+                Some(h) => h.min(family.nbits_hamming),
+                None => family.nbits_hamming,
+            });
 
             let hit = Hit { family: family.name, id };
-            // The same marker listed twice would otherwise be detected twice; harmless,
-            // but it inflates the code list for no reason.
-            if !entry.2.contains(&hit) {
-                entry.1.push(codes[id]);
-                entry.2.push(hit);
+            // Dedup on the codeword, not on the name: overlapping dictionaries mean two
+            // different names can denote the same physical marker, and a pattern listed
+            // twice would be compared against twice and resolve only to the first.
+            match group.codes.iter().position(|&c| c == codes[id]) {
+                Some(i) => {
+                    let reported = group.origins[i].clone();
+                    // `reported == hit` is the plain duplicate case, which needs no note.
+                    if reported != hit && !group.aliases.iter().any(|a| a.also == hit) {
+                        group.aliases.push(Alias { reported, also: hit });
+                    }
+                }
+                None => {
+                    group.codes.push(codes[id]);
+                    group.origins.push(hit);
+                }
             }
         }
     }
 
     Ok(groups
         .into_iter()
-        .map(|(nbits_side_pattern, (nbits_hamming, codes, origins))| MergedFamily {
+        .map(|(nbits_side_pattern, group)| MergedFamily {
             family: OwnedMarkerFamily {
                 name: format!("auto-record-{nbits_side_pattern}x{nbits_side_pattern}").into(),
                 nbits_side_pattern,
-                nbits_hamming,
-                codes: codes.into(),
+                // Only reachable for a group with at least one member, which always sets it.
+                nbits_hamming: group.nbits_hamming.unwrap_or(0),
+                codes: group.codes.into(),
             },
-            origins,
+            origins: group.origins,
+            aliases: group.aliases,
         })
         .collect())
 }
@@ -176,6 +233,71 @@ mod tests {
     fn duplicate_selections_are_collapsed() {
         let merged = merge(&[sel("DICT_4X4_50", &[5, 5]), sel("DICT_4X4_50", &[5])]).unwrap();
         assert_eq!(merged[0].n_markers(), 1);
+    }
+
+    /// The nested-prefix case: `DICT_4X4_50` is literally the first 50 codes of
+    /// `DICT_4X4_250`, so these two names denote one card.
+    #[test]
+    fn overlapping_dictionaries_collapse_to_one_codeword() {
+        let merged = merge(&[sel("DICT_4X4_50", &[4]), sel("DICT_4X4_250", &[4])]).unwrap();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].n_markers(), 1, "the same pattern must be stored once");
+        assert_eq!(
+            merged[0].aliases(),
+            &[Alias {
+                reported: Hit { family: "DICT_4X4_50", id: 4 },
+                also: Hit { family: "DICT_4X4_250", id: 4 },
+            }]
+        );
+        // Whichever name a detection is reported under, it is a configured marker, so the
+        // trigger behaves identically. Only the label differs.
+        assert_eq!(merged[0].resolve(0).unwrap().family, "DICT_4X4_50");
+    }
+
+    /// The only overlap in the whole predefined set where the *ids* differ too, so it is
+    /// the only one where a reported id can surprise the operator.
+    #[test]
+    fn the_apriltag_overlap_is_reported_under_one_name() {
+        let merged = merge(&[
+            sel("DICT_4X4_1000", &[854]),
+            sel("DICT_APRILTAG_16H5", &[18]),
+        ])
+        .unwrap();
+        assert_eq!(merged[0].n_markers(), 1);
+        assert_eq!(merged[0].aliases().len(), 1);
+        assert_eq!(merged[0].aliases()[0].also, Hit { family: "DICT_APRILTAG_16H5", id: 18 });
+    }
+
+    /// Guards the claim in the module docs. If a dictionary update introduces another
+    /// cross-family overlap at differing ids, the docs and the alias warning need
+    /// revisiting, so fail rather than let it pass unnoticed.
+    #[test]
+    fn no_unexpected_cross_family_collisions() {
+        use std::collections::HashMap;
+
+        // code -> the (family, id) that first claimed it, within one grid size.
+        let mut seen: HashMap<(usize, u64), (&str, usize)> = HashMap::new();
+        let mut differing = Vec::new();
+        for (name, _) in predefined::ALL.iter() {
+            let family = predefined::get_by_name(name).expect("ALL names resolve");
+            for (id, &code) in family.codes().iter().enumerate() {
+                let key = (family.nbits_side_pattern, code);
+                match seen.get(&key) {
+                    Some(&(prev_name, prev_id)) if prev_id != id => {
+                        differing.push(format!("{prev_name}:{prev_id} == {name}:{id}"));
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen.insert(key, (name, id));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            differing,
+            vec!["DICT_4X4_1000:854 == DICT_APRILTAG_16H5:18".to_string()],
+            "the set of cross-family collisions at differing ids has changed"
+        );
     }
 
     #[test]

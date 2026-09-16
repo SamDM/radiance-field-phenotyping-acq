@@ -13,20 +13,37 @@
 use arucotools::board::MarkerBoardCfg;
 use arucotools::dictionaries::{HasMarkerFamily, StaticMarkerFamily};
 use arucotools::draw::BoardDrawerCfg;
-use image::{GenericImage, GrayImage, Luma};
+use image::{GrayImage, Luma};
 
-/// Render a single marker, sized as close to `target_side_px` as the module grid allows.
+/// The side length a marker request actually renders at.
 ///
-/// The rendered side is `npix_per_bit * (pattern bits + 2 border bits)`, so the result is
-/// usually a few pixels off the request; read `.width()` for what you actually got.
-pub fn marker_image(
+/// A marker is a whole number of pixels per module, so the rendered side is
+/// `npix_per_bit * (pattern bits + 2 border bits)` and usually lands a few pixels off the
+/// request. Tests that care about the real size ask here rather than assuming.
+pub fn marker_side_px(family: &StaticMarkerFamily, target_side_px: u32) -> u32 {
+    let modules = family.nbits_side_pattern() + 2; // one border bit each side
+    (npix_per_bit(family, target_side_px) * modules) as u32
+}
+
+fn npix_per_bit(family: &StaticMarkerFamily, target_side_px: u32) -> usize {
+    let modules = family.nbits_side_pattern() + 2;
+    ((target_side_px as usize + modules / 2) / modules).max(1)
+}
+
+/// Draw one marker, centred, on a white `w`×`h` background.
+///
+/// The white surround is not decoration: the detector needs a quiet zone around the
+/// marker to find its outer contour at all.
+///
+/// A marker too large for the scene yields the bare background, so a mis-sized request
+/// shows up as "detected nothing" rather than a panic.
+pub fn scene_with_marker(
+    w: u32,
+    h: u32,
     family: &StaticMarkerFamily,
     id: usize,
     target_side_px: u32,
 ) -> Result<GrayImage, Box<dyn std::error::Error>> {
-    let modules = family.nbits_side_pattern() + 2; // one border bit each side
-    let npix_per_bit = ((target_side_px as usize + modules / 2) / modules).max(1);
-
     let board = MarkerBoardCfg::new(*family)
         // A 1x1 `Range` grid starting at `id` is just that one marker.
         .with_marker_ids((1, 1, id))
@@ -36,27 +53,18 @@ pub fn marker_image(
         .build()?;
 
     let drawer = BoardDrawerCfg::new(board)
-        .with_npix_per_bit(npix_per_bit)
+        .with_npix_per_bit(npix_per_bit(family, target_side_px))
         .build()?;
 
-    Ok(drawer.draw_grid::<GrayImage>())
-}
-
-/// Paste `marker` onto a white `w`×`h` background, centred.
-///
-/// The white surround is not decoration: the detector needs a quiet zone around the
-/// marker to find its outer contour at all.
-pub fn scene_with_marker(w: u32, h: u32, marker: &GrayImage) -> GrayImage {
-    let mut scene = GrayImage::from_pixel(w, h, Luma([255]));
-    if marker.width() > w || marker.height() > h {
-        return scene;
+    // `draw_grid_mut` paints onto an existing canvas at an offset, so the marker goes
+    // straight into the scene — no intermediate image and no copy.
+    let mut scene = empty_scene(w, h);
+    let (mw, mh) = (drawer.npix_grid_width() as u32, drawer.npix_grid_height() as u32);
+    if mw > w || mh > h {
+        return Ok(scene);
     }
-    let x0 = (w - marker.width()) / 2;
-    let y0 = (h - marker.height()) / 2;
-    scene
-        .copy_from(marker, x0, y0)
-        .expect("marker fits inside the scene");
-    scene
+    drawer.draw_grid_mut(&mut scene, (((w - mw) / 2) as usize, ((h - mh) / 2) as usize));
+    Ok(scene)
 }
 
 /// A `w`×`h` white scene with no marker in it.
@@ -93,18 +101,33 @@ mod tests {
     use arucotools::dictionaries::predefined;
 
     #[test]
-    fn renders_a_marker_near_the_requested_size() {
-        let img = marker_image(&predefined::DICT_5X5_250, 3, 70).unwrap();
+    fn renders_a_marker_at_the_expected_size() {
         // 5 pattern bits + 2 border bits = 7 modules, so 70 px is exactly 10 px/bit.
-        assert_eq!(img.dimensions(), (70, 70));
+        assert_eq!(marker_side_px(&predefined::DICT_5X5_250, 70), 70);
+    }
+
+    #[test]
+    fn the_marker_lands_centred_in_the_scene() {
+        let scene = scene_with_marker(240, 180, &predefined::DICT_5X5_250, 3, 70).unwrap();
+        assert_eq!(scene.dimensions(), (240, 180));
+        // The marker is 70px centred in 240x180, so its border sits inside this box and
+        // the scene corners stay white.
+        assert!(scene.pixels().any(|p| p.0[0] == 0), "no marker was drawn");
+        assert_eq!(scene.get_pixel(0, 0).0[0], 255, "background should be white");
+        assert_eq!(scene.get_pixel(239, 179).0[0], 255, "background should be white");
+    }
+
+    #[test]
+    fn a_marker_too_large_for_the_scene_leaves_it_blank() {
+        let scene = scene_with_marker(40, 40, &predefined::DICT_5X5_250, 3, 700).unwrap();
+        assert!(scene.pixels().all(|p| p.0[0] == 255));
     }
 
     #[test]
     fn mosaic_round_trips_through_a_green_reduction() {
         // The point of the whole synth module: a phase-correct reduction must recover the
         // scene, not a checkerboard.
-        let marker = marker_image(&predefined::DICT_4X4_50, 7, 60).unwrap();
-        let scene = scene_with_marker(240, 180, &marker);
+        let scene = scene_with_marker(240, 180, &predefined::DICT_4X4_50, 7, 60).unwrap();
         let mosaic = gray_to_rggb_mosaic(&scene);
 
         let reduced =
