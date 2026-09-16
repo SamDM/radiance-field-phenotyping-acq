@@ -137,27 +137,20 @@ impl RecordingsIterState {
             return None;
         }
 
+        // The same check the startup scan applies, so a recording cannot be called
+        // verified now and unverified after a restart. It also counts every frame rather
+        // than sampling the first and last of each camera, as this used to: a recording
+        // with a hole in the middle passed the old check.
         let verified_ok = if ok {
-            let mut missing: Vec<String> = Vec::new();
-            for cam_idx in 0..self.n_cameras {
-                let first = folder.join(frame_filename(cam_idx, 0, self.frame_format.extension()));
-                if !first.exists() {
-                    missing.push(format!("cam {cam_idx} first frame: {}", first.display()));
+            match library::frame_discrepancy(&folder, groups_saved, self.n_cameras) {
+                None => true,
+                Some(problem) => {
+                    let _ = evt_tx.send(wire::ServerMessage::notice(
+                        wire::NoticeSeverity::Error,
+                        format!("recording verification failed: {problem}"),
+                    ));
+                    false
                 }
-                let last = folder.join(frame_filename(cam_idx, groups_saved - 1, self.frame_format.extension()));
-                if !last.exists() {
-                    missing.push(format!("cam {cam_idx} last frame: {}", last.display()));
-                }
-            }
-
-            if missing.is_empty() {
-                true
-            } else {
-                let _ = evt_tx.send(wire::ServerMessage::notice(
-                    wire::NoticeSeverity::Error,
-                    format!("recording verification failed, missing files:\n{}", missing.join("\n")),
-                ));
-                false
             }
         } else {
             false
@@ -166,6 +159,7 @@ impl RecordingsIterState {
         let lr = RecordingEntry {
             path: folder, name, ok: verified_ok, elapsed, groups_saved,
             finished_at: Some(OffsetDateTime::now_utc()),
+            n_cameras: self.n_cameras,
             rating: None,
             // Nothing can have commented on this recording yet: it only enters the
             // library on the line below, and metadata commands address it by name.

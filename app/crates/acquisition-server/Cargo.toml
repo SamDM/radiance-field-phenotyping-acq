@@ -19,6 +19,9 @@ required-features = ["aruco-auto-record"]
 name = "aruco_bench"
 required-features = ["aruco-auto-record"]
 
+[dev-dependencies]
+tempfile = "3"
+
 [features]
 default = []
 # Auto-start/stop recordings when configured ArUco markers come into view.

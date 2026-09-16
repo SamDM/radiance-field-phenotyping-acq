@@ -7,7 +7,7 @@ use acquisition_common::protocol as wire;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use super::super::naming::parse_frame_filename;
+use super::super::naming::parse_frame_path;
 
 pub(super) struct ReplayIterState {
     name: String,
@@ -37,15 +37,7 @@ impl ReplayIterState {
         let mut entries: Vec<(usize, u32, PathBuf)> = Vec::new();
         for entry in dir.flatten() {
             let entry_path = entry.path();
-            let ext = entry_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "png" && ext != "tiff" && ext != "tif" && ext != "jpg" && ext != "jpeg" {
-                continue;
-            }
-            let stem = match entry_path.file_stem().and_then(|s| s.to_str()) {
-                Some(s) => s.to_owned(),
-                None => continue,
-            };
-            if let Some((cam_idx, frame_idx)) = parse_frame_filename(&stem) {
+            if let Some((cam_idx, frame_idx)) = parse_frame_path(&entry_path) {
                 entries.push((cam_idx, frame_idx, entry_path));
             }
         }
