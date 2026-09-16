@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use acquisition_common::debayer::{debayer_crop, debayer_half};
 use acquisition_common::protocol as wire;
@@ -52,7 +53,17 @@ pub(super) struct RecordingsIterState {
     library: library::RecordingLibrary,
     frame_format: crate::FrameFormat,
     zoom_size: u32,
+    last_recheck: Instant,
 }
+
+/// Minimum gap between library re-checks, each covering one recording.
+///
+/// Iterations run at roughly the aggregate frame rate, so this is what actually paces
+/// the sweep: at four checks a second a library of 180 recordings — a full day's worth,
+/// if the offload job has stopped keeping up — is revalidated in about three quarters of
+/// a minute. Fast enough that the client's list never looks wrong for long, slow enough
+/// that the work is invisible.
+const LIBRARY_RECHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 impl RecordingsIterState {
     pub(super) fn new(
@@ -76,7 +87,22 @@ impl RecordingsIterState {
             library,
             frame_format,
             zoom_size,
+            last_recheck: Instant::now(),
         }
+    }
+
+    /// Re-check one recording against the disk, if it is time to.
+    ///
+    /// Recordings can vanish while the server runs — an offload job moving them to a
+    /// network drive — and the library would otherwise go on advertising them until the
+    /// next restart. Removal is all this does; the surrounding loop already knows how to
+    /// cope with a recording disappearing, because trashing one does the same thing.
+    fn recheck_library(&mut self) {
+        if self.last_recheck.elapsed() < LIBRARY_RECHECK_INTERVAL {
+            return;
+        }
+        self.last_recheck = Instant::now();
+        self.library.recheck_next();
     }
 
     pub(super) fn is_recording(&self) -> bool {
@@ -187,6 +213,11 @@ pub(super) fn iteration(
     evt_tx: &broadcast::Sender<wire::ServerMessage>,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    // Before any command is handled, so that a recording which has disappeared is gone
+    // from the library by the time the loop reconciles the selection and any active
+    // replay against it — the same reconciliation trashing a recording relies on.
+    state.recheck_library();
+
     enum RecordingCommand {
         Start { auto: Option<String> },
         Stop,

@@ -84,13 +84,15 @@ impl RecordingEntry {
 
 pub(super) struct RecordingLibrary {
     recordings: Vec<RecordingEntry>,
+    /// Which entry `recheck_next` looks at next.
+    recheck_cursor: usize,
 }
 
 impl RecordingLibrary {
     pub fn new(output_dir_template: &str) -> Self {
         let recordings = scan_all_recordings(output_dir_template);
         info!(count = recordings.len(), "recording library loaded");
-        RecordingLibrary { recordings }
+        RecordingLibrary { recordings, recheck_cursor: 0 }
     }
 
     pub fn wire_recordings(&self) -> Vec<wire::PastRecording> {
@@ -115,6 +117,54 @@ impl RecordingLibrary {
 
     pub fn remove(&mut self, name: &str) {
         self.recordings.retain(|r| r.name != name);
+    }
+
+    /// Re-check the next recording against the disk, advancing the sweep by one.
+    ///
+    /// The library is built once at startup, but recordings can disappear underneath it
+    /// while the server runs — an offload job moving finished recordings to a network
+    /// drive is the expected case. Without re-checking, the client goes on listing
+    /// recordings whose frames are gone and offering replays that cannot load.
+    ///
+    /// One recording per call rather than a full re-scan, because this runs on the
+    /// acquisition thread: a sweep of a day's recordings is a latency spike on the same
+    /// thread that drives `retrieve_result`, and that thread has no slack. One `readdir`
+    /// per call is not worth measuring, and the whole library is still revalidated in as
+    /// many calls as it has entries.
+    ///
+    /// Verdicts are not written back to `metadata.json`. The startup scan recomputes
+    /// them anyway, and writing to disk here would put the very latency this avoids
+    /// straight back on the thread.
+    pub fn recheck_next(&mut self) {
+        if self.recordings.is_empty() {
+            return;
+        }
+        let idx = self.recheck_cursor % self.recordings.len();
+        let entry = &self.recordings[idx];
+        let inventory = inventory_frames(&entry.path);
+
+        if inventory.n_frames == 0 {
+            info!(name = %entry.name, "recording frames are gone, removing from library");
+            self.recordings.remove(idx);
+            // Leave the cursor where it is: everything after the removed entry has
+            // shifted down by one, so this slot now holds the recording that would
+            // otherwise be skipped.
+            self.recheck_cursor = idx;
+            return;
+        }
+        self.recheck_cursor = idx + 1;
+
+        // `ok` only ever goes false: a recording that failed verification when it was
+        // made is not redeemed by a later look, and one whose frames went missing has
+        // already lost the frames.
+        if entry.ok {
+            if let Some(problem) =
+                describe_discrepancy(&inventory, entry.groups_saved, entry.n_cameras)
+            {
+                info!(name = %entry.name, problem = %problem, "recording no longer matches its metadata");
+                self.recordings[idx].ok = false;
+            }
+        }
     }
 }
 
@@ -414,6 +464,87 @@ mod tests {
 
             assert_eq!(finish_says, scan_says, "{name}: finish and scan disagree");
         }
+    }
+
+    /// Strip the frames from a recording folder, leaving its metadata — what an offload
+    /// job leaves behind.
+    fn strip_frames(dir: &Path) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            if e.file_name() != "metadata.json" {
+                std::fs::remove_file(e.path()).unwrap();
+            }
+        }
+    }
+
+    fn names(lib: &RecordingLibrary) -> Vec<String> {
+        lib.wire_recordings().into_iter().map(|r| r.name).collect()
+    }
+
+    #[test]
+    fn rechecking_drops_a_recording_whose_frames_went_away() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = recording_dir(tmp.path(), "a", 2, 2, &[]);
+        let mut lib = RecordingLibrary::new(&tmp.path().to_string_lossy());
+        assert_eq!(names(&lib).len(), 1);
+
+        strip_frames(&dir);
+        lib.recheck_next();
+        assert!(names(&lib).is_empty(), "offloaded recording should be gone");
+    }
+
+    /// The cursor must not step past the entry that shifts down into a removed slot, or
+    /// the sweep silently skips a recording every time it removes one.
+    #[test]
+    fn a_sweep_visits_every_recording_even_across_removals() {
+        let tmp = tempfile::tempdir().unwrap();
+        for name in ["a", "b", "c", "d"] {
+            recording_dir(tmp.path(), name, 2, 2, &[]);
+        }
+        let mut lib = RecordingLibrary::new(&tmp.path().to_string_lossy());
+        assert_eq!(names(&lib), vec!["d", "c", "b", "a"], "newest first");
+
+        // Empty the two in the middle, so a skip would leave one of them behind.
+        strip_frames(&tmp.path().join("b"));
+        strip_frames(&tmp.path().join("c"));
+
+        for _ in 0..4 {
+            lib.recheck_next();
+        }
+        assert_eq!(names(&lib), vec!["d", "a"]);
+    }
+
+    #[test]
+    fn rechecking_clears_ok_when_frames_go_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = recording_dir(tmp.path(), "a", 4, 2, &[]);
+        let mut lib = RecordingLibrary::new(&tmp.path().to_string_lossy());
+        assert!(lib.wire_recordings()[0].ok);
+
+        std::fs::remove_file(dir.join("cam-0_frame-00002.png")).unwrap();
+        lib.recheck_next();
+        let rec = &lib.wire_recordings()[0];
+        assert!(!rec.ok, "a recording missing frames must not still read as verified");
+        assert_eq!(rec.name, "a", "it stays listed, it is just not intact");
+    }
+
+    #[test]
+    fn rechecking_an_empty_library_does_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut lib = RecordingLibrary::new(&tmp.path().to_string_lossy());
+        lib.recheck_next();
+        assert!(names(&lib).is_empty());
+    }
+
+    #[test]
+    fn rechecking_leaves_an_intact_recording_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        recording_dir(tmp.path(), "a", 3, 2, &[]);
+        let mut lib = RecordingLibrary::new(&tmp.path().to_string_lossy());
+        for _ in 0..5 {
+            lib.recheck_next();
+        }
+        assert_eq!(names(&lib), vec!["a"]);
+        assert!(lib.wire_recordings()[0].ok);
     }
 
     #[test]
