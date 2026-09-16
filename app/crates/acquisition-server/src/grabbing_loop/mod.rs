@@ -29,14 +29,15 @@ pub fn run(
     evt_tx: broadcast::Sender<wire::ServerMessage>,
     preview_tx: broadcast::Sender<Vec<wire::PreviewFrame>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (camera_array, rate_control, _pylon_guard) = start_cameras(&args)?;
-
-    // Built before anything else touches the cameras: a bad marker configuration is a
-    // startup failure, not something to discover hours into an unattended run.
+    // Built before the cameras are opened, so that a configuration this rig cannot honour
+    // fails while there is still nothing to tear down. The detector thread it spawns idles
+    // until the first frame is offered.
     let watcher = acquisition_server::aruco::AutoRecordWatcher::new(
         &args.auto_record_cfg(),
         args.n_cameras,
     )?;
+
+    let (camera_array, rate_control, _pylon_guard) = start_cameras(&args)?;
 
     let mut server_state = MutableServerState {
         camera_array,

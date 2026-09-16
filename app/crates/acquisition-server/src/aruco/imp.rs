@@ -59,11 +59,16 @@ impl AutoRecordWatcher {
             return Ok(AutoRecordWatcher { inner: None });
         }
 
-        let families = markers::merge(&cfg.markers)?;
         let cameras = cfg.camera_list(n_cameras);
         if cameras.is_empty() {
             return Ok(AutoRecordWatcher { inner: None });
         }
+
+        // Resolved only once there is something to resolve it for. Deferring it past the
+        // bail above costs no error coverage: `Args::validate_aruco` runs the same merge
+        // during argument parsing, so a bad family name is rejected before this is
+        // reached whether or not any camera is watched.
+        let families = markers::merge(&cfg.markers)?;
 
         // The sweep width is how many cameras the round-robin actually visits, which
         // `--aruco-cameras` may have narrowed to fewer than the rig has. Captured here

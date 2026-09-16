@@ -79,7 +79,7 @@ impl Default for AutoRecordCfg {
 impl AutoRecordCfg {
     /// Whether anything is configured to trigger on.
     pub fn is_enabled(&self) -> bool {
-        !self.markers.is_empty() && self.markers.iter().any(|m| !m.ids.is_empty())
+        self.markers.iter().any(|m| !m.ids.is_empty())
     }
 
     /// Camera indices to round-robin over, given how many cameras exist.
