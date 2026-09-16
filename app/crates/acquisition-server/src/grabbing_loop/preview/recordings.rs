@@ -40,9 +40,10 @@ enum AcquisitionActivity {
 
 pub(super) struct RecordingsIterState {
     activity: AcquisitionActivity,
-    /// Whether the current recording was started by the marker watcher rather than a
-    /// client. Only auto-started recordings may be auto-stopped.
-    auto_started: bool,
+    /// Why the marker watcher started the current recording, or `None` if a client did.
+    /// Doubles as the auto-started flag — only auto-started recordings may be
+    /// auto-stopped — and becomes the saved recording's comment.
+    auto_trigger: Option<String>,
     watcher: AutoRecordWatcher,
     n_cameras: usize,
     zipper: StreamZipper<Frame<Bayer>>,
@@ -66,7 +67,7 @@ impl RecordingsIterState {
         let library = library::RecordingLibrary::new(&output_dir_template);
         RecordingsIterState {
             activity: AcquisitionActivity::Idle,
-            auto_started: false,
+            auto_trigger: None,
             watcher,
             n_cameras,
             zipper: StreamZipper::new(n_cameras, grouper_buffer_len),
@@ -123,7 +124,9 @@ impl RecordingsIterState {
         };
 
         self.activity = AcquisitionActivity::Idle;
-        self.auto_started = false;
+        // Taken before the early returns below so a discarded recording cannot leave its
+        // reason behind to be attached to the next one.
+        let auto_trigger = self.auto_trigger.take();
 
         if groups_saved == 0 {
             warn!("recording not saved: 0 frames captured");
@@ -163,7 +166,10 @@ impl RecordingsIterState {
         let lr = RecordingEntry {
             path: folder, name, ok: verified_ok, elapsed, groups_saved,
             finished_at: Some(OffsetDateTime::now_utc()),
-            rating: None, comment: None,
+            rating: None,
+            // Nothing can have commented on this recording yet: it only enters the
+            // library on the line below, and metadata commands address it by name.
+            comment: auto_trigger,
         };
         write_metadata(&lr.path, &lr);
         let name = lr.name.clone();
@@ -188,7 +194,7 @@ pub(super) fn iteration(
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
     enum RecordingCommand {
-        Start { auto: bool },
+        Start { auto: Option<String> },
         Stop,
     }
 
@@ -208,7 +214,7 @@ pub(super) fn iteration(
     for message in messages {
         match &message.command {
             wire::ClientCommand::StartRecording => {
-                recording_cmds.push((message.uuid, RecordingCommand::Start { auto: false }));
+                recording_cmds.push((message.uuid, RecordingCommand::Start { auto: None }));
             }
             wire::ClientCommand::StopRecording => {
                 recording_cmds.push((message.uuid, RecordingCommand::Stop));
@@ -249,18 +255,21 @@ pub(super) fn iteration(
     // acks for UUIDs they never sent, so it is inert on the wire.
     let auto_action = state.watcher.poll(PollCtx {
         recording: state.is_recording(),
-        auto_started: state.auto_started,
+        auto_started: state.auto_trigger.is_some(),
         active: !in_replay && !is_busy,
     });
     if recording_cmds.is_empty() {
         if let Some(action) = auto_action {
-            info!(reason = %action.reason(), "auto-record triggered");
+            let reason = action.reason();
+            info!(reason, "auto-record triggered");
             let _ = evt_tx.send(wire::ServerMessage::notice(
                 wire::NoticeSeverity::Info,
-                format!("auto-record: {}", action.reason()),
+                format!("auto-record: {reason}"),
             ));
             let cmd = match action {
-                AutoAction::Start { .. } => RecordingCommand::Start { auto: true },
+                AutoAction::Start { .. } => {
+                    RecordingCommand::Start { auto: Some(format!("auto-record: {reason}")) }
+                }
                 AutoAction::Stop => RecordingCommand::Stop,
             };
             recording_cmds.push((Uuid::new_v4(), cmd));
@@ -281,7 +290,7 @@ pub(super) fn iteration(
                         start,
                         groups_saved: 0,
                     };
-                    state.auto_started = auto;
+                    state.auto_trigger = auto;
                     accept_cmd(evt_tx, cmd_uuid, "recording started");
                 } else {
                     reject_cmd(evt_tx, cmd_uuid, "start ignored: already recording");
