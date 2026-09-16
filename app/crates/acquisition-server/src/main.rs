@@ -196,8 +196,9 @@ pub struct Args {
 pub struct AutoRecordArgs {
     /// Markers that start a recording, as `FAMILY:id,id,...` — for example
     /// `DICT_5X5_250:3,30,22`. Repeat the flag to mix families. Seeing any listed marker
-    /// starts a recording; the recording stops once the marker that started it has been
-    /// out of view for `--aruco-stop-after` consecutive checks.
+    /// starts a recording; the recording runs for as long as any listed marker stays
+    /// visible to any watched camera, and stops once none has been seen for
+    /// `--aruco-stop-after` consecutive passes over the cameras.
     ///
     /// An unknown family name is rejected at startup with the list of valid names.
     #[arg(long, value_parser = parse_marker_selector)]
@@ -232,8 +233,8 @@ pub struct AutoRecordArgs {
     #[arg(long, default_value_t = aruco::DEFAULT_WINDOW)]
     pub aruco_window: u8,
 
-    /// Consecutive checks without the marker, on the camera that started the recording,
-    /// before stopping.
+    /// Consecutive passes over every watched camera, finding no marker anywhere, before
+    /// stopping. One pass costs `--aruco-interval-ms` per camera.
     #[arg(long, default_value_t = aruco::DEFAULT_STOP_AFTER)]
     pub aruco_stop_after: u32,
 

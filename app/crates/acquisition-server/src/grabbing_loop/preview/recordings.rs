@@ -261,7 +261,7 @@ pub(super) fn iteration(
             ));
             let cmd = match action {
                 AutoAction::Start { .. } => RecordingCommand::Start { auto: true },
-                AutoAction::Stop { .. } => RecordingCommand::Stop,
+                AutoAction::Stop => RecordingCommand::Stop,
             };
             recording_cmds.push((Uuid::new_v4(), cmd));
         }

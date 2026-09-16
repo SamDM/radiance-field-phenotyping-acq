@@ -65,6 +65,11 @@ impl AutoRecordWatcher {
             return Ok(AutoRecordWatcher { inner: None });
         }
 
+        // The sweep width is how many cameras the round-robin actually visits, which
+        // `--aruco-cameras` may have narrowed to fewer than the rig has. Captured here
+        // because `cameras` is moved into `Inner` below.
+        let n_watched = cameras.len();
+
         let params = worker::detector_params(cfg.thresh_win, cfg.min_perimeter_rate);
 
         // Report what the detector will actually look for: merging deduplicates and groups
@@ -115,6 +120,7 @@ impl AutoRecordWatcher {
                     window: cfg.window,
                     stop_after: cfg.stop_after,
                     cooldown: cfg.cooldown,
+                    n_cameras: n_watched,
                 }),
                 dropped: 0,
                 last_drop_report: Instant::now(),

@@ -50,7 +50,7 @@ pub struct AutoRecordCfg {
     pub confirmations: u8,
     /// `N` of the K-of-N start hysteresis.
     pub window: u8,
-    /// Consecutive misses on the locked camera before stopping.
+    /// Consecutive round-robin passes with no sighting on any camera before stopping.
     pub stop_after: u32,
     pub cooldown: Duration,
     /// Single adaptive-threshold window size, pinned to avoid the detector's 3-pass sweep.

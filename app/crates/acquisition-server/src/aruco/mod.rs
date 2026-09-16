@@ -70,8 +70,8 @@ pub enum AutoAction {
         id: usize,
         camera: usize,
     },
-    /// The marker that started this recording has been gone for long enough.
-    Stop { camera: usize },
+    /// No configured marker has been seen on any camera for long enough.
+    Stop,
 }
 
 impl AutoAction {
@@ -81,9 +81,7 @@ impl AutoAction {
             AutoAction::Start { family, id, camera } => {
                 format!("marker {family}:{id} seen on camera {camera}")
             }
-            AutoAction::Stop { camera } => {
-                format!("marker no longer visible on camera {camera}")
-            }
+            AutoAction::Stop => "no configured marker visible on any camera".to_string(),
         }
     }
 }
@@ -120,7 +118,7 @@ pub const DEFAULT_DOWNSCALE: u32 = 3;
 pub const DEFAULT_CONFIRMATIONS: u8 = 2;
 /// Default `N` of the K-of-N start hysteresis.
 pub const DEFAULT_WINDOW: u8 = 3;
-/// Default number of consecutive misses on the locked camera before stopping.
+/// Default number of consecutive round-robin passes with no sighting before stopping.
 pub const DEFAULT_STOP_AFTER: u32 = 3;
 /// Default debounce after a fire.
 pub const DEFAULT_COOLDOWN: Duration = Duration::from_secs(5);

@@ -5,16 +5,29 @@
 //!
 //! # Shape of the problem
 //!
-//! Cameras are examined round-robin, one per detection cycle, so any given camera is only
-//! looked at every `n_cameras` cycles. That has two consequences the rules below exist to
-//! handle:
+//! The intended behaviour is simple: **a recording runs for as long as any configured
+//! marker is visible to any configured camera.** What complicates it is that we cannot
+//! afford to look at every camera on every frame, so cameras are examined round-robin,
+//! one per detection cycle. Round-robin is an approximation of "watch everything at
+//! once", and the two rules below exist to keep the approximation honest.
 //!
-//! - Hysteresis has to be **per camera**. A global "K of the last N detections" window
-//!   would, with four cameras, degenerate to K=1 — the other three cameras keep flushing
-//!   the window with misses that mean nothing.
-//! - Once recording, watching every camera is wasted effort. The watcher locks onto the
-//!   camera that fired, so "gone for N checks" counts checks of the camera that actually
-//!   saw the marker, and stop latency stops scaling with camera count.
+//! - **Starting is per camera.** A global "K of the last N detections" window would, with
+//!   four cameras, degenerate to K=1 — the other three cameras keep flushing the window
+//!   with misses that mean nothing. So K-of-N is counted against the ring of the camera
+//!   that saw the marker.
+//!
+//! - **Stopping is per sweep.** Absence is a claim about *every* camera, and a single
+//!   cycle only ever examines one of them. Counting raw misses would stop a recording
+//!   while the marker sits in plain view of a camera that simply has not had its turn
+//!   yet: with four cameras and the marker on camera 2, three of every four cycles are
+//!   misses. So the miss budget is scaled by the number of cameras, and
+//!   `stop_after` counts *complete round-robin passes* in which nothing was seen
+//!   anywhere. Any hit on any camera resets it.
+//!
+//! Scaling the budget is what makes hand-off work without anybody tracking it. If camera
+//! 1 sees the marker over frames Ta..Tc and camera 2 sees it over Tb..Td, camera 2's
+//! sightings keep resetting the counter after camera 1 has lost it, and the recording
+//! runs until Td — no camera "owns" the recording, and none needs to.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -27,18 +40,20 @@ pub struct TriggerCfg {
     pub confirmations: u8,
     /// `N`: length of the per-camera sighting window.
     pub window: u8,
-    /// Consecutive misses on the locked camera before stopping.
+    /// Round-robin passes with no sighting on any camera before stopping.
     pub stop_after: u32,
     /// Debounce after any fire.
     pub cooldown: Duration,
+    /// How many cameras the round-robin covers. Scales the miss budget so `stop_after`
+    /// counts sweeps rather than cycles.
+    pub n_cameras: usize,
 }
 
 pub struct TriggerState {
     cfg: TriggerCfg,
     /// Per-camera ring of recent observations: did any configured marker appear?
     rings: HashMap<usize, VecDeque<bool>>,
-    /// The camera whose sighting started the current recording.
-    locked_cam: Option<usize>,
+    /// Consecutive observations, across all cameras, in which nothing was seen.
     misses: u32,
     /// Set after any recording-state change the watcher did not cause. Blocks a start
     /// until the marker has been seen to leave; see `observe`.
@@ -52,7 +67,6 @@ impl TriggerState {
         TriggerState {
             cfg,
             rings: HashMap::new(),
-            locked_cam: None,
             misses: 0,
             require_absence: false,
             cooldown_until: None,
@@ -64,8 +78,14 @@ impl TriggerState {
     /// and after every fire, so stale observations cannot drive a later decision.
     pub fn reset(&mut self) {
         self.rings.clear();
-        self.locked_cam = None;
         self.misses = 0;
+    }
+
+    /// Consecutive marker-free observations that amount to `stop_after` full sweeps.
+    fn miss_budget(&self) -> u32 {
+        self.cfg
+            .stop_after
+            .saturating_mul(self.cfg.n_cameras.max(1) as u32)
     }
 
     /// Feed one completed detection.
@@ -100,7 +120,7 @@ impl TriggerState {
         let sightings = ring.iter().filter(|&&s| s).count() as u8;
 
         if ctx.recording {
-            self.observe_while_recording(cam_idx, seen, ctx, now)
+            self.observe_while_recording(seen, ctx, now)
         } else {
             self.observe_while_idle(cam_idx, hits, sightings, now)
         }
@@ -137,9 +157,8 @@ impl TriggerState {
             return None;
         }
 
-        // `hits` is non-empty and the window is satisfied: commit to this camera.
+        // `hits` is non-empty and the window is satisfied: start.
         let hit = &hits[0];
-        self.locked_cam = Some(cam_idx);
         self.misses = 0;
         self.prev_recording = true;
         self.cooldown_until = Some(now + self.cfg.cooldown);
@@ -153,23 +172,21 @@ impl TriggerState {
 
     fn observe_while_recording(
         &mut self,
-        cam_idx: usize,
         seen: bool,
         ctx: PollCtx,
         now: Instant,
     ) -> Option<AutoAction> {
-        // Only the camera that started this recording gets a vote on ending it. Cameras
-        // that never saw the marker would otherwise accumulate misses forever.
-        if self.locked_cam != Some(cam_idx) {
-            return None;
-        }
+        // Any camera seeing any configured marker keeps the recording alive, whichever
+        // camera started it. This is the whole of the keep-alive rule.
         if seen {
             self.misses = 0;
             return None;
         }
 
-        self.misses += 1;
-        if self.misses < self.cfg.stop_after {
+        // Saturating because a manually started recording never trips the branch below,
+        // so this would otherwise climb for as long as the recording runs.
+        self.misses = self.misses.saturating_add(1);
+        if self.misses < self.miss_budget() {
             return None;
         }
         // Whoever started this recording gets to end it. A human pressing record is not
@@ -181,7 +198,7 @@ impl TriggerState {
         self.prev_recording = false;
         self.cooldown_until = Some(now + self.cfg.cooldown);
         self.reset();
-        Some(AutoAction::Stop { camera: cam_idx })
+        Some(AutoAction::Stop)
     }
 }
 
@@ -189,12 +206,18 @@ impl TriggerState {
 mod tests {
     use super::*;
 
+    /// Single camera: one sweep is one observation, so `stop_after` counts raw misses.
     fn cfg() -> TriggerCfg {
+        cfg_n(1)
+    }
+
+    fn cfg_n(n_cameras: usize) -> TriggerCfg {
         TriggerCfg {
             confirmations: 2,
             window: 3,
             stop_after: 3,
             cooldown: Duration::from_secs(5),
+            n_cameras,
         }
     }
 
@@ -215,6 +238,16 @@ mod tests {
         t + Duration::from_secs(secs)
     }
 
+    /// Drive a start on `cam` and assert it happened, so tests about stopping can begin
+    /// from a recording without restating how starting works.
+    fn start_on(s: &mut TriggerState, cam: usize, t: Instant) {
+        assert_eq!(s.observe(cam, &hit(), idle(), t), None);
+        assert!(
+            matches!(s.observe(cam, &hit(), idle(), t), Some(AutoAction::Start { .. })),
+            "fixture failed to start a recording"
+        );
+    }
+
     #[test]
     fn starts_only_after_k_sightings_on_one_camera() {
         let mut s = TriggerState::new(cfg());
@@ -231,7 +264,7 @@ mod tests {
     fn sightings_do_not_pool_across_cameras() {
         // The bug this guards: with a global window, one sighting each on two different
         // cameras would satisfy K=2 even though neither camera ever saw it twice.
-        let mut s = TriggerState::new(cfg());
+        let mut s = TriggerState::new(cfg_n(3));
         let t = Instant::now();
         assert_eq!(s.observe(0, &hit(), idle(), t), None);
         assert_eq!(s.observe(1, &hit(), idle(), t), None);
@@ -254,8 +287,7 @@ mod tests {
     fn does_not_restart_while_already_recording() {
         let mut s = TriggerState::new(cfg());
         let t = Instant::now();
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
         // Marker stays in view for a long time; nothing further should fire.
         for i in 0..20 {
             assert_eq!(s.observe(0, &hit(), recording(), later(t, i)), None);
@@ -263,17 +295,16 @@ mod tests {
     }
 
     #[test]
-    fn stops_after_exactly_n_misses_on_the_locked_camera() {
+    fn stops_after_exactly_n_misses_on_a_single_camera_rig() {
         let mut s = TriggerState::new(cfg());
         let t = Instant::now();
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
 
         assert_eq!(s.observe(0, &[], recording(), t), None);
         assert_eq!(s.observe(0, &[], recording(), t), None);
         assert_eq!(
             s.observe(0, &[], recording(), t),
-            Some(AutoAction::Stop { camera: 0 }),
+            Some(AutoAction::Stop),
             "third consecutive miss should stop"
         );
     }
@@ -282,29 +313,62 @@ mod tests {
     fn a_reappearance_resets_the_miss_count() {
         let mut s = TriggerState::new(cfg());
         let t = Instant::now();
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
 
         s.observe(0, &[], recording(), t);
         s.observe(0, &[], recording(), t);
         s.observe(0, &hit(), recording(), t); // back in view
         s.observe(0, &[], recording(), t);
         s.observe(0, &[], recording(), t);
-        assert_eq!(s.observe(0, &[], recording(), t), Some(AutoAction::Stop { camera: 0 }));
+        assert_eq!(s.observe(0, &[], recording(), t), Some(AutoAction::Stop));
     }
 
+    /// The miss budget counts complete round-robin passes, not cycles. With three cameras
+    /// and the marker parked in front of one of them, two thirds of all cycles are misses
+    /// — and none of them mean the marker is gone.
     #[test]
-    fn misses_on_other_cameras_never_stop_a_recording() {
-        // Cameras that never saw the marker would otherwise accumulate misses forever and
-        // end every recording after three cycles.
-        let mut s = TriggerState::new(cfg());
+    fn a_marker_on_one_camera_keeps_a_three_camera_rig_recording() {
+        let mut s = TriggerState::new(cfg_n(3));
         let t = Instant::now();
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
+
         for i in 0..30 {
-            assert_eq!(s.observe(1, &[], recording(), later(t, i)), None);
-            assert_eq!(s.observe(2, &[], recording(), later(t, i)), None);
+            let t = later(t, i);
+            assert_eq!(s.observe(0, &[], recording(), t), None);
+            assert_eq!(s.observe(1, &[], recording(), t), None);
+            // Only camera 2 can see it, and only every third cycle.
+            assert_eq!(s.observe(2, &hit(), recording(), t), None);
         }
+    }
+
+    /// Hand-off: camera 1 sees the marker over Ta..Tc, camera 2 over Tb..Td. Nothing owns
+    /// the recording, so it must run until the *last* camera loses sight of it.
+    #[test]
+    fn one_camera_hands_the_recording_off_to_another() {
+        let mut s = TriggerState::new(cfg_n(2));
+        let t = Instant::now();
+        start_on(&mut s, 0, t);
+
+        // Overlap: both cameras see it.
+        for i in 0..5 {
+            let t = later(t, i);
+            assert_eq!(s.observe(0, &hit(), recording(), t), None);
+            assert_eq!(s.observe(1, &hit(), recording(), t), None);
+        }
+        // Camera 0 loses it; camera 1 still has it. The recording must survive this
+        // indefinitely — under the old camera lock it would have stopped here.
+        for i in 5..25 {
+            let t = later(t, i);
+            assert_eq!(s.observe(0, &[], recording(), t), None);
+            assert_eq!(s.observe(1, &hit(), recording(), t), None);
+        }
+        // Now camera 1 loses it too, and the budget finally runs out: stop_after=3 sweeps
+        // over 2 cameras is 6 consecutive marker-free observations.
+        let t = later(t, 25);
+        for _ in 0..5 {
+            assert_eq!(s.observe(0, &[], recording(), t), None);
+        }
+        assert_eq!(s.observe(1, &[], recording(), t), Some(AutoAction::Stop));
     }
 
     #[test]
@@ -313,8 +377,7 @@ mod tests {
         let t = Instant::now();
         let manual = PollCtx { recording: true, auto_started: false, active: true };
         // Simulate the human pressing record, then the marker being absent indefinitely.
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
         for i in 0..30 {
             assert_eq!(s.observe(0, &[], manual, later(t, i)), None);
         }
@@ -328,8 +391,7 @@ mod tests {
     fn an_external_stop_does_not_immediately_restart() {
         let mut s = TriggerState::new(cfg());
         let t = Instant::now();
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
 
         // Frame limit hits: the loop stops recording on its own.
         let t = later(t, 60);
@@ -355,8 +417,7 @@ mod tests {
     fn cooldown_blocks_an_immediate_restart_after_an_auto_stop() {
         let mut s = TriggerState::new(cfg());
         let t = Instant::now();
-        s.observe(0, &hit(), idle(), t);
-        s.observe(0, &hit(), idle(), t);
+        start_on(&mut s, 0, t);
         for _ in 0..3 {
             s.observe(0, &[], recording(), t);
         }

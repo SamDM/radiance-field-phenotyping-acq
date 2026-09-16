@@ -115,7 +115,7 @@ fn a_visible_marker_starts_a_recording_and_its_removal_stops_it() {
 
     let action = pump(&mut w, &absent, 0, auto_recording(), 200);
     assert!(
-        matches!(action, Some(AutoAction::Stop { camera: 0 })),
+        matches!(action, Some(AutoAction::Stop)),
         "expected a stop once the marker left, got {action:?}"
     );
 }
