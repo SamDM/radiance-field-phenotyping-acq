@@ -231,12 +231,14 @@ impl Inner {
         if self.dropped == 0 || self.last_drop_report.elapsed() < DROP_REPORT_INTERVAL {
             return;
         }
-        // A high rate is not an error — decimation dropping frames is the design — but it
-        // is how you tell "the interval is doing its job" from "the detector is starved".
+        // Only frames offered while a detection was still running are counted; the ones
+        // the round-robin and the interval turn away are not. So a large number is the
+        // drop-if-busy policy working as intended rather than a fault, and what is worth
+        // watching is a change in it, which means detection has slowed down.
         debug!(
             dropped = self.dropped,
             window_secs = self.last_drop_report.elapsed().as_secs(),
-            "aruco frames skipped"
+            "aruco frames offered while the detector was busy"
         );
         self.dropped = 0;
         self.last_drop_report = Instant::now();

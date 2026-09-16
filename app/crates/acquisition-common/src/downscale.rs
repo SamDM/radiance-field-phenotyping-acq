@@ -20,12 +20,10 @@ use image::GrayImage;
 /// Take one green site per 2×2 quad at a quad stride of `k`, producing a
 /// `w/(2k)`×`h/(2k)` grayscale image.
 ///
-/// One byte read per output pixel, which makes this essentially free next to the
-/// detection it feeds. The tradeoff against [`bayer_rggb_box_average`] is aliasing: this
-/// discards all but one of every `4k²` source bytes, so hard marker edges land wherever
-/// the stride happens to fall. That is acceptable precisely because the marker has to be
-/// large in the *output* image anyway — roughly 30 px on a side, i.e. ~5 px per bit
-/// module — so module edges stay comfortably oversampled even after the discard.
+/// One byte read per output pixel. It aliases — all but one of every `4k²` bytes is
+/// discarded, so hard edges land wherever the stride falls — which is affordable because
+/// a detectable marker is many output pixels across regardless.
+/// [`bayer_rggb_box_average`] is the antialiasing alternative.
 ///
 /// Returns an empty image for inputs too small to hold a single quad.
 pub fn bayer_rggb_green_subsample(data: &[u8], w: u32, h: u32, k: u32) -> GrayImage {
@@ -53,13 +51,12 @@ pub fn bayer_rggb_green_subsample(data: &[u8], w: u32, h: u32, k: u32) -> GrayIm
 /// Average both green sites of every quad across each `k`×`k` block of quads, producing a
 /// `w/(2k)`×`h/(2k)` grayscale image.
 ///
-/// Reads `(w*h)/2` bytes — every green site — so it costs meaningfully more than
-/// [`bayer_rggb_green_subsample`], but it antialiases properly rather than point-sampling.
-/// Worth reaching for if detection misses markers that are visibly present at a large `k`,
-/// or in noisy low light where averaging also suppresses shot noise.
+/// Reads every green site, so it costs meaningfully more than
+/// [`bayer_rggb_green_subsample`], but antialiases rather than point-sampling. Worth
+/// trying if detection misses markers that are visibly present, or in noisy low light.
 ///
-/// Blocks are clamped to the available quads, so partial blocks at the right and bottom
-/// edges average whatever is there instead of reading past the frame.
+/// Partial blocks at the right and bottom edges average the quads that are there rather
+/// than reading past the frame.
 ///
 /// Returns an empty image for inputs too small to hold a single quad.
 pub fn bayer_rggb_box_average(data: &[u8], w: u32, h: u32, k: u32) -> GrayImage {
