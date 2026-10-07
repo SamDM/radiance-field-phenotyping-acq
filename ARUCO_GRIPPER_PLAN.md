@@ -113,6 +113,49 @@ turn if the machine resumes on the same pot.
 
 Read it offline, from the saved frames, in downstream processing. Not in the server.
 
+## arucotools main (4a57f47) vs our pin (fdf2ad9)
+
+41 commits ahead. Tried with a scratch crate on the 2026-10-07 frames and all 792
+frames from 2026-09-22.
+
+**Breaking API changes** that the bump has to absorb:
+- One `MarkerFamily` type replaces `OwnedMarkerFamily`, `StaticMarkerFamily` and
+  `HasMarkerFamily`. Fields are now private behind accessors. `nbits_side_pattern` is
+  now `nbits_pattern_side`, and `nbits_hamming` is now `nbits_max_correction`.
+- `detect_markers(&img, &[&MarkerFamily], &params)` takes several dictionaries and
+  returns `Detections { markers: Vec<DetectedMarker { marker, dictionary, confidence }>,
+  rejected: Vec<RejectedCandidate { corners, reasons }> }`.
+- Defaults moved to OpenCV 5.0.0: `min_marker_distance_rate` 0.125, a border-error
+  budget, `valid_bit_id_threshold` 0.49. On our frames, detections and positions are
+  unchanged.
+
+**What it means for the server:**
+- **Most of `aruco/markers.rs` can go.** The library now finds candidates once and
+  identifies them against every dictionary passed in, resolving overlapping
+  dictionaries to one marker by confidence and then list order. So pass the
+  configured predefined families whole, and keep the hits whose id is configured.
+  - This is also more robust than a shrunken code list: an unconfigured id is
+    recognised as itself and dropped, instead of being error-corrected onto a
+    configured one.
+  - The extra cost is negligible: a handful of candidates against 50 codes.
+  - Zero false positives over the 792 frames with the full `DICT_6X6_50`.
+- **`confidence`** is available as an extra false-positive guard. Far-pot markers read
+  0.85–0.92, large markers 0.94–1.0. It's not a size gate.
+- **`rejected`** candidates help diagnose missed detections on the rig.
+- **Aruco3 mode is fast, but its size cutoff is coarse.**
+  - Its minimum marker size is roughly `(32 + r·M)·2k` full-res px. In practice the
+    cutoff lands about 1.2–1.4× above that. At k=3 with r=0.02, a 260–290 px marker is
+    missed and a ≥ 390 px one detected; with r=0.05, a 390–430 px marker is missed and
+    a ≥ 520 px one detected.
+  - It runs in 7–14 ms against 17 ms for our current settings. Detection isn't a
+    bottleneck at 17 ms per 200 ms.
+  - So keep the explicit gate (plan A) and our standard settings.
+- **AprilTag mode** takes ~100 ms at k=3, 6× our settings, with slightly tighter
+  corners. For the offline calibration, not for triggering.
+- **`arucotools-calib`** (multi-camera bundle adjustment, unknown marker layout,
+  stereo-rig constraint, turntable example) is for offline processing. It's out of
+  scope for the recorder.
+
 ## Still needed
 
 A recording of a pot in the gripper through a full rotation, ideally while watering.
