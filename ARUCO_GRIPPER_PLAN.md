@@ -8,9 +8,9 @@ dropped. No code has been changed for it yet.
 Every day the machine picks each pot in turn, rotates it in front of the stereo pair
 while watering it, and puts it back. Each pot should become one recording.
 
-- Every pot carries the **same** ring of ArUco markers, family `DICT_6X6_50`. There are
-  probably 8 of them: ids 1 and 8 are both visible on a single pot, so a consecutive
-  set would be 1–8. Confirm on a real recording.
+- Every pot carries the **same** ring of 8 ArUco markers, `DICT_6X6_50` ids 1–8, on
+  the pot's underside. In the gripper the ring faces the cameras, so rotating the pot
+  turns the ring within the image plane.
 - Each pot also has a QR code that identifies it.
 - The markers are there for calibration and 3D reconstruction. The plant deforms
   (wobble, watering), which is why the rig is stereo: each time-matched pair stands on
@@ -156,13 +156,46 @@ frames from 2026-09-22.
   stereo-rig constraint, turntable example) is for offline processing. It's out of
   scope for the recorder.
 
+## Measurements on gripped pots (2026-10-07 17-06-39 and 17-08-12)
+
+Two consecutive pots, recorded separately. The machine was otherwise empty. The pots
+had already been watered, so each turns only about one marker step and back. Markers
+near the right edge are clipped by the sensor, and the growth lights cause
+reflections. Both are normal operating conditions. All figures below are at
+production settings: k=3, full `DICT_6X6_50`.
+
+- **Ids:** 1–8 all seen. 7 only once, and only at k=2; it is probably the clipped one.
+- **Where held markers land (cam0):** x 0.70–0.96, y 0.32–0.63 (ring centre ≈ 0.85,
+  0.48). On cam1: x 0.80–0.96, y 0.20–0.60. The gripped pot sits on the right edge,
+  not the centre; the cameras will be adjusted, so re-measure afterwards.
+- **In transit** (arriving or leaving, one frame each): y 0.06–0.27.
+- **Pots in the rack** sit at the top of the frame: y ≤ 0.09, 110–145 px. Returned
+  pots end up there.
+- **Size:** held markers are 179–228 px on cam0 and 149–200 px on cam1. The rack is
+  110–145 px. **Size alone is marginal** (149 against 145), so **position is the
+  primary test**; any y cut-off between about 0.15 and 0.3 separates them. Keep the
+  minimum size optional.
+- **Detection under reflections:** every held frame has ≥ 3 detections on cam0 and
+  ≥ 1 on cam1 at 1 fps. k=2 adds 2% more markers at 2× the cost, so keep k=3.
+  Confidence (0.86–1.0) doesn't separate held from rack.
+- **Timeline, recording 17-06-39:** markers frames 2–53. Static frames 3–44 (marker
+  positions identical to 0.001, about 40 s). Turning frames 45–52. Leaving 53. No
+  markers after that, while the machine moves on.
+- **Timeline, recording 17-08-12:** markers frames 1–15, turning 6–10 and 13–14.
+- **No mid-hold dropouts**, so a stop-after of a few seconds is safe. The gap between
+  pots is about 40 s with no markers, well above any sensible stop window. Each pot
+  becomes its own recording naturally.
+- **Change metric** (share of pixels above 16 levels, adjacent frames):
+  - static hold: **0.0000**
+  - turning: 1.4–7%
+  - arrival and departure: 5–27%
+  - One pair in 17-06-39 (frames 50→51) changes by 0.51% with the markers unmoved,
+    right at the 0.5% threshold. That's harmless either way: comparing against the
+    last *saved* frame makes small changes add up.
+  - About 80% of held frames in 17-06-39 (≈ 42 of 52) were duplicates.
+
 ## Still needed
 
-A recording of a pot in the gripper through a full rotation, ideally while watering.
-It settles:
-
-- the actual marker ids
-- the ROI and minimum size
-- the longest gap with no marker visible (for stop-after)
-- the rotation duration (for `--frames`)
-- the change metric while turning versus while stalled (for B's threshold)
+- Re-measure the ROI after the cameras are adjusted to stop clipping the ring.
+- A run with watering and a full rotation, for the rotation duration (`--frames`) and
+  the change metric while water is flowing.
