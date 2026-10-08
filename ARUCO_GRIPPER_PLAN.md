@@ -1,6 +1,6 @@
 # Aruco auto-record on the watering machine: findings and plan
 
-Temporary working note (2026-10-07). Delete once the plan below is implemented or
+Temporary working note (2026-10-07, updated 2026-10-08). Delete once the plan below is implemented or
 dropped. No code has been changed for it yet.
 
 ## The setting
@@ -18,9 +18,9 @@ while watering it, and puts it back. Each pot should become one recording.
 
 ## Problems
 
-1. **Pots that aren't being handled trigger recordings.** Pots waiting further back are
-   in view and carry the same marker ids. Only the pot in the gripper (centre of both
-   frames) should start or sustain a recording.
+1. **Pots that aren't being handled trigger recordings.** Pots in the rack are in view
+   at the top of the frame and carry the same marker ids. Only the pot in the gripper
+   should start or sustain a recording.
 2. **Duplicate frames.** If the machine stalls or runs slowly, a recording fills with
    frames that add no information.
 
@@ -57,51 +57,74 @@ raw Bayer PNGs.
 
 ## Plan
 
-### A. Marker gate: count a marker only if it is in the right place and large enough
+Order of work: 0 (arucotools update), then A, B and C. D and E are small and
+independent.
+
+### 0. Update arucotools to main first
+
+The update simplifies A: see the arucotools section below. Detect with the full
+predefined families, keep hits with configured ids, and delete most of
+`aruco/markers.rs`. Then re-run the tests, `aruco_bench` and the 792-frame
+false-positive sweep.
+
+### A. Marker gate: count a marker only if it is in the right place
 
 - Add `--aruco-roi x0,y0,x1,y1`: the rectangle the marker's centre must fall in, as
-  fractions of the frame.
-- Add `--aruco-min-side-px N`: the minimum mean side length, in full-resolution pixels.
+  fractions of the frame. **This is the primary test.** Held markers sit at y ≥ 0.20
+  and rack pots at y ≤ 0.09 (see the measurements).
+- Add `--aruco-min-side-px N`, optional and off by default: the minimum mean side
+  length, in full-resolution pixels. The size margin is only 4 px (held markers from
+  149 px, rack up to 145 px), so it can only back up the ROI.
 - Filter in the detector thread, before the trigger, so a gated-out marker neither
   starts nor sustains a recording.
 - Log every marker's geometry and whether it passed, at debug level, for tuning.
-- A draft exists but was not applied. It lived in the session scratchpad, so treat it
-  as gone. It added `MarkerGate { roi, min_side_px }` to `AutoRecordCfg`, and passed it
-  plus the scale `2*downscale` to `worker::run`/`detect`.
-- Size the gate on a full rotation: side markers foreshortened at a steep angle look
-  smaller, and the ROI must cover the whole ring's projection.
-- Zero-code stopgap: `--aruco-min-perimeter-rate ≈ 0.25` rejects markers under about
-  220 px at k=3. It filters on size only, and may also cut foreshortened gripped
-  markers.
+- Starting values for the current camera placement: ROI `0.6,0.15,1.0,0.8`, which
+  covers the measured spread with margin and excludes the rack. Re-measure after the
+  cameras are adjusted.
+  - The ring turns within the image plane, so held markers keep their size as the
+    pot turns, and their centres trace a circle around the gripper axis (cam0 ≈ 0.85,
+    0.48). The ROI must cover that whole circle, not just the partial turn recorded so
+    far.
+  - The first and last frame of a pot (in transit, y 0.06–0.27) are partly cut off by
+    the ROI. That's fine: the pot is moving, not being imaged.
+- A draft existed but was not applied, and is gone with the session scratchpad. It
+  added `MarkerGate { roi, min_side_px }` to `AutoRecordCfg`, and passed it plus the
+  scale `2*downscale` to `worker::run`/`detect`.
+- Don't use the size-only stopgap `--aruco-min-perimeter-rate ≈ 0.25` (cut-off about
+  220 px at k=3): it would also reject held markers, which start at 149 px.
 
 ### B. Skip frame groups that haven't changed since the last saved group
 
 - Compare each camera's thumbnail against that camera's last **saved** frame, not the
   previous frame. That way slow drift accumulates and is still recorded, and a stalled
   machine saves nothing.
-- Save the whole group if any camera exceeds the threshold, which preserves the
-  time-matched pairs. Start with a threshold of about 0.5% of pixels above 16 levels.
+- Save the whole group if any camera exceeds the threshold. The zipper already pairs
+  frames by time; this just keeps them together.
+- Threshold: 0.5% of pixels above 16 levels. Measured: a static hold gives 0%, turning
+  1.4–7%. In 17-06-39 this would have kept about 10 of 52 held frames.
 - The frame limit counts only saved frames, so a stall doesn't use it up.
 - Costs under 1 ms per camera on the acquisition thread.
 - Server flag, off by default, enabled in `launch-server.py`. Manual recordings of
   static scenes (calibration, sync tests) are unaffected.
 - Wobble and watering while the machine is stalled still cause saves. Accept that: the
-  geometry really did change. Optionally restrict the comparison to the gripper ROI.
-- Later upgrade: estimate the pot's rotation angle from the markers and save one frame
-  per N degrees, which gives even coverage for reconstruction.
+  geometry really did change. Check against a run with watering. If flowing water
+  alone keeps every frame, restrict the comparison to the ROI or raise the threshold.
+- Later upgrade: the ring's in-plane angle is easy to read from the marker centres, so
+  B could save one frame per N degrees of rotation, which gives even coverage for
+  reconstruction.
 
 ### C. Tune the trigger for this cycle
 
-- Raise `--aruco-stop-after` so the no-marker window is a few seconds. Today it is
-  3 passes × 2 cameras × 200 ms ≈ 1.2 s. A brief occlusion by the gripper or watering
-  arm would otherwise stop the recording, and after the 5 s cooldown a new one starts:
-  one pot split over several recordings. The window must stay shorter than the gap
-  between pots.
-- Size `--frames` well above one rotation's worth of frames. Hitting the limit
-  mid-rotation stops the recording, and the absence latch then blocks a restart while
-  that pot is still in view, so the rest of the turn is lost.
-- Configure ids generously, e.g. `DICT_6X6_50:0,1,2,3,4,5,6,7,8,9`, until the real set
-  is confirmed.
+- `--aruco-markers DICT_6X6_50:1,2,3,4,5,6,7,8`. The `launch-server.py` line
+  currently says `DICT_5X5_250:1..9` and is commented out.
+- Raise `--aruco-stop-after` to cover about 3–5 s: with 2 cameras at the 200 ms
+  interval, that's 8–12 passes. Held pots showed no marker dropouts, and pots are about
+  40 s apart, so anything in that range separates pots cleanly while tolerating an
+  occlusion by the watering arm. Today the window is 3 passes ≈ 1.2 s.
+- Size `--frames` well above one rotation's worth of *changed* frames, once B is in
+  place. Hitting the limit mid-rotation stops the recording, and the absence latch
+  then blocks a restart while that pot is still in view, so the rest of the turn is
+  lost. The full rotation duration is still unmeasured.
 
 ### D. Stall handling: warn, don't stop
 
