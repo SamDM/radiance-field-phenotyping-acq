@@ -10,13 +10,14 @@ use image::RgbImage;
 use pylon::{CameraArray, GrabResult, PixelFormat};
 use time::OffsetDateTime;
 use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use turbojpeg::{Compressor, Image, PixelFormat as TjPixelFormat, Subsamp};
 
 use uuid::Uuid;
 
 use crate::utils::zipper::{StreamZipper, ZipError, ZipErrorReason, Zipped};
 use acquisition_server::aruco::{AutoAction, AutoRecordWatcher, PollCtx};
+use acquisition_server::change::ChangeGate;
 
 fn accept_cmd(evt_tx: &broadcast::Sender<wire::ServerMessage>, cmd_uuid: Uuid, reason: &str) {
     info!("{reason}");
@@ -46,6 +47,8 @@ pub(super) struct RecordingsIterState {
     /// auto-stopped — and becomes the saved recording's comment.
     auto_trigger: Option<String>,
     watcher: AutoRecordWatcher,
+    /// Skips unchanged groups of auto-started recordings; `None` when not configured.
+    change_gate: Option<ChangeGate>,
     n_cameras: usize,
     zipper: StreamZipper<Frame<Bayer>>,
     output_dir_template: String,
@@ -74,12 +77,14 @@ impl RecordingsIterState {
         frame_format: crate::FrameFormat,
         zoom_size: u32,
         watcher: AutoRecordWatcher,
+        min_change: Option<f64>,
     ) -> Self {
         let library = library::RecordingLibrary::new(&output_dir_template);
         RecordingsIterState {
             activity: AcquisitionActivity::Idle,
             auto_trigger: None,
             watcher,
+            change_gate: min_change.map(ChangeGate::new),
             n_cameras,
             zipper: StreamZipper::new(n_cameras, grouper_buffer_len),
             output_dir_template,
@@ -150,6 +155,15 @@ impl RecordingsIterState {
         };
 
         self.activity = AcquisitionActivity::Idle;
+        if self.auto_trigger.is_some() {
+            if let Some(gate) = &self.change_gate {
+                info!(
+                    groups_saved,
+                    groups_skipped = gate.skipped(),
+                    "auto-recording finished; unchanged frame groups were not saved"
+                );
+            }
+        }
         // Taken before the early returns below so a discarded recording cannot leave its
         // reason behind to be attached to the next one.
         let auto_trigger = self.auto_trigger.take();
@@ -316,6 +330,9 @@ pub(super) fn iteration(
                         groups_saved: 0,
                     };
                     state.auto_trigger = auto;
+                    if let Some(gate) = state.change_gate.as_mut() {
+                        gate.reset();
+                    }
                     accept_cmd(evt_tx, cmd_uuid, "recording started");
                 } else {
                     reject_cmd(evt_tx, cmd_uuid, "start ignored: already recording");
@@ -399,10 +416,17 @@ pub(super) fn iteration(
             }
             let ts = frame.camera_timestamp_ns();
             for result in state.zipper.push(frame, cam_idx, ts) {
+                // Only auto-started recordings are thinned out; a manual one keeps every
+                // frame it was asked for.
+                let change_gate = match state.auto_trigger {
+                    Some(_) => state.change_gate.as_mut(),
+                    None => None,
+                };
                 let saved = match process_grouped_frames_result(
                     result,
                     &state.output_dir_template,
                     &state.activity,
+                    change_gate,
                     in_replay,
                     zoom_requests,
                     preview_tx,
@@ -494,6 +518,7 @@ fn process_grouped_frames_result(
     result: Result<Zipped<Frame<Bayer>>, ZipError<Frame<Bayer>>>,
     output_dir_template: &str,
     camera_state: &AcquisitionActivity,
+    change_gate: Option<&mut ChangeGate>,
     in_replay: bool,
     zoom_requests: &HashMap<String, (f32, f32)>,
     preview_tx: &broadcast::Sender<Vec<wire::PreviewFrame>>,
@@ -502,6 +527,15 @@ fn process_grouped_frames_result(
 ) -> Result<Option<u32>, Box<dyn std::error::Error>> {
     match result {
         Ok(group) => {
+            // Judged on the raw mosaics, before they are converted below, and only when the
+            // group would otherwise be saved.
+            let judgement = match (camera_state, change_gate.as_deref()) {
+                (AcquisitionActivity::Recording { .. }, Some(gate)) => Some(gate.judge(
+                    group.items.iter().map(|(f, _)| (&f.data[..], f.width, f.height)),
+                )),
+                _ => None,
+            };
+
             // Always save the raw Bayer mosaic for tiff/png (1 byte/pixel vs. 3 for
             // debayered RGB) — downstream processing debayers from storage. Live
             // preview below already debayers on the fly regardless of what gets saved.
@@ -526,6 +560,19 @@ fn process_grouped_frames_result(
                 groups_saved,
             } = camera_state
             {
+                if let Some(judgement) = &judgement {
+                    debug!(
+                        changed_pct = format_args!("{:.2}", judgement.max_fraction * 100.0),
+                        save = judgement.save,
+                        "frame group change"
+                    );
+                    if !judgement.save {
+                        if let Some(gate) = change_gate {
+                            gate.skip();
+                        }
+                        return Ok(None);
+                    }
+                }
                 let dir = expand_dir(output_dir_template, *start);
                 std::fs::create_dir_all(&dir)?;
                 let paths: Vec<PathBuf> = (0..frames.len())
@@ -562,6 +609,10 @@ fn process_grouped_frames_result(
                         timestamp_camera = %frame.camera_datetime_local(),
                         "saved frame"
                     );
+                }
+                // The new reference only once the group is actually on disk.
+                if let (Some(gate), Some(judgement)) = (change_gate, judgement) {
+                    gate.saved(judgement);
                 }
                 return Ok(Some(groups_saved + 1));
             }

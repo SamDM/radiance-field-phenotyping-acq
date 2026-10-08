@@ -1,7 +1,7 @@
 # Aruco auto-record on the watering machine: findings and plan
 
 Temporary working note (2026-10-07, updated 2026-10-08). Delete once the plan below is implemented or
-dropped. Steps 0, A and C are implemented; B, D and E are not.
+dropped. Steps 0, A, B and C are implemented; D is not.
 
 ## The setting
 
@@ -57,8 +57,8 @@ raw Bayer PNGs.
 
 ## Plan
 
-Order of work: 0 (arucotools update), then A, B and C. D and E are small and
-independent.
+Order of work: 0 (arucotools update), then A, B and C. D is small and independent.
+Reading the pot's QR code is out of scope for this branch.
 
 ### 0. Update arucotools to main first — done (2026-10-08)
 
@@ -118,7 +118,26 @@ from pushing the pot out. Original notes:
 - Don't use the size-only stopgap `--aruco-min-perimeter-rate ≈ 0.25` (cut-off about
   220 px at k=3): it would also reject held markers, which start at 149 px.
 
-### B. Skip frame groups that haven't changed since the last saved group
+### B. Skip frame groups that haven't changed since the last saved group — done (2026-10-08)
+
+Implemented in `src/change.rs` (`ChangeGate`), applied in `process_grouped_frames_result`,
+enabled with `--aruco-min-change-pct 0.5` in `launch-server.py`.
+- Departure from the notes below: it applies **only to auto-started recordings**, so the
+  flag can stay on in `launch-server.py` without thinning out manual sync tests or
+  calibration runs.
+- Skipped groups take no frame number, so the files stay contiguous and verification is
+  unchanged.
+- A finished auto-recording logs `groups_saved` and `groups_skipped`; each group's score
+  is logged at debug level ("frame group change").
+- Thumbnail cost measured at 1.0 ms per camera.
+
+On the recordings, at 0.5%:
+- 17-06-39 keeps 12 of 52 held frames: 2, 3, 29 (slow drift reached 0.59%), and the
+  turn 45–53.
+- 17-08-12 keeps 12 of 15: that pot turned during 6–11 (5–7% per frame), and the still
+  frames 4, 5 and 12 were skipped.
+
+Original notes:
 
 - Compare each camera's thumbnail against that camera's last **saved** frame, not the
   previous frame. That way slow drift accumulates and is still recorded, and a stalled
@@ -168,10 +187,6 @@ Original notes:
 Send the client a notice like "no new frames for N s" instead of auto-stopping. With B
 in place a stalled recording costs nothing, and stopping would lose the rest of the
 turn if the machine resumes on the same pot.
-
-### E. Pot identity from the QR code
-
-Read it offline, from the saved frames, in downstream processing. Not in the server.
 
 ## arucotools main (4a57f47) vs our pin (fdf2ad9)
 

@@ -12,7 +12,7 @@ try:
          "--preview-addr", "0.0.0.0:8082",
          "--n-cameras", "2",
          # A safety cap, not the normal end of a recording: auto-recordings stop when the
-         # pot leaves. A held pot took 52 s without a full turn (2026-10-07); a full turn
+         # pot leaves, and only saved (changed) frame groups count toward it. A full turn
          # with watering is still unmeasured, and hitting the cap mid-turn loses the rest
          # of that pot, so leave plenty of room.
          "--frames", "300",
@@ -37,6 +37,11 @@ try:
          # takes 2 s (each camera is examined every other frame), so this stops ~6 s
          # after the pot leaves. Pots are ~40 s apart.
          "--aruco-stop-after", "3",
+         # Skip frame groups of auto-recordings unless a camera changed in at least this
+         # % of pixels since the last saved group, so a stalled machine saves nothing.
+         # A still pot changes 0%, a turning pot 1.4-7% per frame (2026-10-07).
+         # Manual recordings keep every frame.
+         "--aruco-min-change-pct", "0.5",
         ],
         # aruco=debug logs every marker's position, size and whether the ROI admitted
         # it, for tuning. Drop back to plain "info" once the ROI is settled.

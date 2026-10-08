@@ -89,6 +89,14 @@ pub struct AutoRecordCfg {
     /// Which detections count. Applied before the trigger, so a marker outside it neither
     /// starts nor sustains a recording.
     pub gate: MarkerGate,
+    /// Skip a frame group of an auto-started recording unless some camera changed by at
+    /// least this fraction of pixels since the last saved group; see
+    /// [`crate::change`]. `None` saves every group.
+    ///
+    /// Lives here, though the watcher never reads it, because it applies only to
+    /// recordings the watcher started: a manual recording keeps every frame it was asked
+    /// for, so a sync test or a calibration of a static scene is never thinned out.
+    pub min_change: Option<f64>,
     /// Single adaptive-threshold window size, pinned to avoid the detector's 3-pass sweep.
     pub thresh_win: u32,
     pub min_perimeter_rate: f64,
@@ -107,6 +115,7 @@ impl Default for AutoRecordCfg {
             stop_after: super::DEFAULT_STOP_AFTER,
             cooldown: super::DEFAULT_COOLDOWN,
             gate: MarkerGate::OPEN,
+            min_change: None,
             thresh_win: super::DEFAULT_THRESH_WIN,
             min_perimeter_rate: super::DEFAULT_MIN_PERIMETER_RATE,
         }

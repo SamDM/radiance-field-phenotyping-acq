@@ -256,6 +256,16 @@ pub struct AutoRecordArgs {
     #[arg(long, default_value_t = 0.0)]
     pub aruco_min_side_px: f64,
 
+    /// Save a frame group of an auto-started recording only if some camera changed in at
+    /// least this percentage of pixels since the last saved group. A stalled machine then
+    /// saves nothing, and the frame limit counts only saved groups. Changes in overall
+    /// brightness don't count. Off by default; manual recordings always keep every frame.
+    ///
+    /// Measured on the watering rig: a pot held still changes 0%, a turning pot 1.4-7%
+    /// between frames at 1 fps.
+    #[arg(long)]
+    pub aruco_min_change_pct: Option<f64>,
+
     /// Debounce in seconds after any automatic start or stop.
     #[arg(long, default_value_t = aruco::DEFAULT_COOLDOWN.as_secs())]
     pub aruco_cooldown_secs: u64,
@@ -338,6 +348,7 @@ impl Args {
                 roi: self.aruco.aruco_roi.unwrap_or(aruco::MarkerGate::OPEN.roi),
                 min_side_px: self.aruco.aruco_min_side_px,
             },
+            min_change: self.aruco.aruco_min_change_pct.map(|pct| pct / 100.0),
             thresh_win: self.aruco.aruco_thresh_win,
             min_perimeter_rate: self.aruco.aruco_min_perimeter_rate,
         }
@@ -390,6 +401,11 @@ impl Args {
                 "--aruco-min-side-px must be a finite number >= 0 (got {})",
                 a.aruco_min_side_px
             ));
+        }
+        if let Some(pct) = a.aruco_min_change_pct {
+            if !(pct > 0.0 && pct <= 100.0) {
+                return Err(format!("--aruco-min-change-pct must be within (0, 100] (got {pct})"));
+            }
         }
         if let Some(cams) = &a.aruco_cameras {
             if cams.is_empty() {

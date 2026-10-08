@@ -32,10 +32,9 @@ pub fn run(
     // Built before the cameras are opened, so that a configuration this rig cannot honour
     // fails while there is still nothing to tear down. The detector thread it spawns idles
     // until the first frame is offered.
-    let watcher = acquisition_server::aruco::AutoRecordWatcher::new(
-        &args.auto_record_cfg(),
-        args.n_cameras,
-    )?;
+    let auto_record_cfg = args.auto_record_cfg();
+    let watcher =
+        acquisition_server::aruco::AutoRecordWatcher::new(&auto_record_cfg, args.n_cameras)?;
 
     let (camera_array, rate_control, _pylon_guard) = start_cameras(&args)?;
 
@@ -60,6 +59,7 @@ pub fn run(
             args.frame_format,
             args.zoom_size,
             watcher,
+            auto_record_cfg.min_change,
         ),
         prev_wire_status: None,
     };

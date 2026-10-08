@@ -25,6 +25,7 @@ impl PreviewIterState {
         frame_format: crate::FrameFormat,
         zoom_size: u32,
         watcher: acquisition_server::aruco::AutoRecordWatcher,
+        min_change: Option<f64>,
     ) -> Self {
         PreviewIterState {
             recordings: recordings::RecordingsIterState::new(
@@ -35,6 +36,7 @@ impl PreviewIterState {
                 frame_format,
                 zoom_size,
                 watcher,
+                min_change,
             ),
             replay: None,
             zoom_requests: HashMap::new(),
