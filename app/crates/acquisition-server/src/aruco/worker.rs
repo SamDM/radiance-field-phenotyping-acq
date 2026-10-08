@@ -1,6 +1,6 @@
 //! The detection thread.
 //!
-//! Owns the merged families and detector parameters, both built once at startup — the
+//! Owns the marker set and detector parameters, both built once at startup — the
 //! detector is stateless, so there is nothing to recreate per frame and nothing to
 //! synchronise. Runs until its job channel closes, which is how the watcher's `Drop`
 //! shuts it down.
@@ -12,7 +12,7 @@ use arucotools::detect::{detect_markers, CornerRefinementMethod, DetectorParams}
 use image::GrayImage;
 use tracing::debug;
 
-use super::markers::{Hit, MergedFamily};
+use super::markers::{Hit, MarkerSet};
 
 pub struct DetectJob {
     pub cam_idx: usize,
@@ -33,11 +33,11 @@ pub struct DetectOutcome {
 ///   threshold-and-contour pipeline three times per frame. One pinned window is the single
 ///   biggest speed lever available, and a marker large enough to read at all does not need
 ///   a multi-scale search to be found.
-/// - `error_correction_rate` is dialled right down. Merged families carry only the
-///   configured codewords, so a *different* marker from the same family is no longer in the
-///   code list — with a generous correction radius it could be pulled onto a configured
-///   code and start a recording nobody asked for. Requiring a near-exact match makes a
-///   false trigger far less likely, which matters more here than detecting a damaged tag.
+/// - `error_correction_rate` is dialled down from 0.6. A wide correction radius lets
+///   marker-like texture — a QR code's finder patterns, a printed label — be corrected onto
+///   a valid codeword and start a recording nobody asked for. Requiring a near-exact match
+///   makes that far less likely, which matters more here than detecting a damaged tag: the
+///   held pot shows several markers at once, so missing one costs nothing.
 ///
 /// Corner refinement stays off: only IDs are wanted, never geometry.
 pub fn detector_params(thresh_win: u32, min_perimeter_rate: f64) -> DetectorParams {
@@ -54,14 +54,12 @@ pub fn detector_params(thresh_win: u32, min_perimeter_rate: f64) -> DetectorPara
 }
 
 /// Run every configured family over one image and collect the configured markers found.
-pub fn detect(families: &[MergedFamily], params: &DetectorParams, gray: &GrayImage) -> Vec<Hit> {
+pub fn detect(markers: &MarkerSet, params: &DetectorParams, gray: &GrayImage) -> Vec<Hit> {
     let mut hits = Vec::new();
-    for merged in families {
-        for marker in detect_markers(gray, merged.family(), params) {
-            if let Some(hit) = merged.resolve(marker.id) {
-                if !hits.contains(hit) {
-                    hits.push(hit.clone());
-                }
+    for found in detect_markers(gray, markers.families(), params).markers {
+        if let Some(hit) = markers.resolve(found.dictionary, found.marker.id) {
+            if !hits.contains(hit) {
+                hits.push(hit.clone());
             }
         }
     }
@@ -71,14 +69,14 @@ pub fn detect(families: &[MergedFamily], params: &DetectorParams, gray: &GrayIma
 pub fn run(
     jobs: Receiver<DetectJob>,
     results: Sender<DetectOutcome>,
-    families: Vec<MergedFamily>,
+    markers: MarkerSet,
     params: DetectorParams,
 ) {
     // Ends when the watcher drops its sender.
     for job in jobs {
         let queued_ms = job.dispatched_at.elapsed().as_secs_f64() * 1e3;
         let started = Instant::now();
-        let hits = detect(&families, &params, &job.gray);
+        let hits = detect(&markers, &params, &job.gray);
         let detect_ms = started.elapsed().as_secs_f64() * 1e3;
 
         debug!(

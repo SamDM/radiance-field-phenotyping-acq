@@ -11,7 +11,7 @@
 //! detections.
 
 use arucotools::board::MarkerBoardCfg;
-use arucotools::dictionaries::{HasMarkerFamily, StaticMarkerFamily};
+use arucotools::dictionaries::MarkerFamily;
 use arucotools::draw::BoardDrawerCfg;
 use image::{GrayImage, Luma};
 
@@ -20,13 +20,13 @@ use image::{GrayImage, Luma};
 /// A marker is a whole number of pixels per module, so the rendered side is
 /// `npix_per_bit * (pattern bits + 2 border bits)` and usually lands a few pixels off the
 /// request. Tests that care about the real size ask here rather than assuming.
-pub fn marker_side_px(family: &StaticMarkerFamily, target_side_px: u32) -> u32 {
-    let modules = family.nbits_side_pattern() + 2; // one border bit each side
+pub fn marker_side_px(family: &MarkerFamily, target_side_px: u32) -> u32 {
+    let modules = family.nbits_pattern_side() + 2; // one border bit each side
     (npix_per_bit(family, target_side_px) * modules) as u32
 }
 
-fn npix_per_bit(family: &StaticMarkerFamily, target_side_px: u32) -> usize {
-    let modules = family.nbits_side_pattern() + 2;
+fn npix_per_bit(family: &MarkerFamily, target_side_px: u32) -> usize {
+    let modules = family.nbits_pattern_side() + 2;
     ((target_side_px as usize + modules / 2) / modules).max(1)
 }
 
@@ -40,15 +40,15 @@ fn npix_per_bit(family: &StaticMarkerFamily, target_side_px: u32) -> usize {
 pub fn scene_with_marker(
     w: u32,
     h: u32,
-    family: &StaticMarkerFamily,
+    family: &MarkerFamily,
     id: usize,
     target_side_px: u32,
 ) -> Result<GrayImage, Box<dyn std::error::Error>> {
-    let board = MarkerBoardCfg::new(*family)
+    let board = MarkerBoardCfg::new(family.clone())
         // A 1x1 `Range` grid starting at `id` is just that one marker.
         .with_marker_ids((1, 1, id))
-        .with_nbits_border(1)
-        .with_phys_bit_size(1.0)
+        .with_nbits_border_width(1)
+        .with_phys_bit_side(1.0)
         .with_phys_sep_len(0.0)
         .build()?;
 

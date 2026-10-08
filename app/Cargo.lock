@@ -371,7 +371,7 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 [[package]]
 name = "arucotools"
 version = "0.1.0"
-source = "git+ssh://git@gitlab.psb.ugent.be/samey/arucotools-rs.git?rev=fdf2ad93a01a6641b63b2467e81990d36a860ae4#fdf2ad93a01a6641b63b2467e81990d36a860ae4"
+source = "git+ssh://git@gitlab.psb.ugent.be/samey/arucotools-rs.git?rev=4a57f4758ea726eb5ff605a62e178069ffb077d5#4a57f4758ea726eb5ff605a62e178069ffb077d5"
 dependencies = [
  "ab_glyph",
  "image",

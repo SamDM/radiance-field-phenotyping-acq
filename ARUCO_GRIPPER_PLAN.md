@@ -60,12 +60,21 @@ raw Bayer PNGs.
 Order of work: 0 (arucotools update), then A, B and C. D and E are small and
 independent.
 
-### 0. Update arucotools to main first
+### 0. Update arucotools to main first — done (2026-10-08)
 
-The update simplifies A: see the arucotools section below. Detect with the full
-predefined families, keep hits with configured ids, and delete most of
-`aruco/markers.rs`. Then re-run the tests, `aruco_bench` and the 792-frame
-false-positive sweep.
+Pinned to 4a57f47. `aruco/markers.rs` no longer merges codewords into a synthetic
+family. It passes each configured family whole to one `detect_markers` call and
+matches detections on the codeword, so overlapping dictionary names still resolve to
+the configured name.
+
+Checked:
+- The tests pass, with and without the feature.
+- `aruco_bench` is unchanged: about 5 ms per detection at k=3, same size thresholds.
+- A replay of the recordings through the real `AutoRecordWatcher` (ids 1–8):
+  - The 792 frames from 2026-09-22 never start a recording.
+  - 17-06-39 starts at frame 3 and stops at frame 56 (markers in frames 2–53).
+  - 17-08-12 starts at frame 2 and stops at frame 18 (markers in frames 1–15).
+  - 16-16-13 starts on the rack pot, as expected until A lands.
 
 ### A. Marker gate: count a marker only if it is in the right place
 

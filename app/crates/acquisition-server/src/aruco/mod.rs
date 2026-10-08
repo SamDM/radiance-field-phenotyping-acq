@@ -52,7 +52,7 @@ pub use stub::AutoRecordWatcher;
 /// notice that the rig will never trigger.
 #[cfg(feature = "aruco-auto-record")]
 pub fn validate_markers(selectors: &[MarkerSelector]) -> Result<(), MarkerCfgError> {
-    markers::merge(selectors).map(|_| ())
+    markers::MarkerSet::new(selectors).map(|_| ())
 }
 
 /// What the watcher wants the recording state machine to do.

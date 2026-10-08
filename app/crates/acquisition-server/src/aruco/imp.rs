@@ -14,7 +14,7 @@ use acquisition_common::downscale::{bayer_rggb_box_average, bayer_rggb_green_sub
 use acquisition_common::{Bayer, Frame};
 use tracing::{debug, info, warn};
 
-use super::markers;
+use super::markers::MarkerSet;
 use super::trigger::{TriggerCfg, TriggerState};
 use super::worker::{self, DetectJob, DetectOutcome};
 use super::{AutoAction, AutoRecordCfg, DownscaleMode, MarkerCfgError, PollCtx};
@@ -65,10 +65,10 @@ impl AutoRecordWatcher {
         }
 
         // Resolved only once there is something to resolve it for. Deferring it past the
-        // bail above costs no error coverage: `Args::validate_aruco` runs the same merge
+        // bail above costs no error coverage: `Args::validate_aruco` runs the same resolution
         // during argument parsing, so a bad family name is rejected before this is
         // reached whether or not any camera is watched.
-        let families = markers::merge(&cfg.markers)?;
+        let markers = MarkerSet::new(&cfg.markers)?;
 
         // The sweep width is how many cameras the round-robin actually visits, which
         // `--aruco-cameras` may have narrowed to fewer than the rig has. Captured here
@@ -77,24 +77,23 @@ impl AutoRecordWatcher {
 
         let params = worker::detector_params(cfg.thresh_win, cfg.min_perimeter_rate);
 
-        // Report what the detector will actually look for: merging deduplicates and groups
-        // by grid geometry, so both counts can differ from what was typed on the command
-        // line. `detector_passes` is the one that costs -- it is how many times the full
-        // threshold-and-contour pipeline runs per detection cycle.
-        let n_markers: usize = families.iter().map(|f| f.n_markers()).sum();
-        let n_passes = families.len();
-
         // Overlapping dictionaries mean two configured names can denote one physical
         // marker. Triggering is unaffected, but detections of it can only be reported
         // under one name, so say which — otherwise the logs name a marker the operator
         // never configured.
-        for alias in families.iter().flat_map(|f| f.aliases()) {
+        for alias in markers.aliases() {
             warn!(
                 reported = %format!("{}:{}", alias.reported.family, alias.reported.id),
                 also_configured_as = %format!("{}:{}", alias.also.family, alias.also.id),
                 "two configured markers are the same pattern; reporting the first"
             );
         }
+
+        // Report what the detector will actually look for: duplicates and overlapping
+        // names collapse, so the count can differ from what was typed on the command line.
+        // Taken now because `markers` moves to the worker below.
+        let n_markers = markers.n_markers();
+        let n_dictionaries = markers.families().len();
 
         // Capacity 1 with `try_send`: a busy worker means the frame is dropped, never
         // queued. A frame that waited in a queue cannot answer "is the marker there now?".
@@ -103,12 +102,12 @@ impl AutoRecordWatcher {
 
         let worker = std::thread::Builder::new()
             .name("aruco-detect".into())
-            .spawn(move || worker::run(job_rx, out_tx, families, params))
+            .spawn(move || worker::run(job_rx, out_tx, markers, params))
             .expect("spawn aruco detection thread");
 
         info!(
             markers = n_markers,
-            detector_passes = n_passes,
+            dictionaries = n_dictionaries,
             cameras = ?cameras,
             downscale = cfg.downscale,
             mode = ?cfg.downscale_mode,

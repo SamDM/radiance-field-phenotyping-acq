@@ -11,8 +11,8 @@ try:
          "--control-addr", "0.0.0.0:8081",
          "--preview-addr", "0.0.0.0:8082",
          "--n-cameras", "2",
-         "--frames", "500",
-         "--framerate", "3.0",
+         "--frames", "100",
+         "--framerate", "1.0",
         #  "--auto-adjust-duration-secs", "30",
         #  "--auto-adjust-minimize-gain",
         #  "--auto-adjust-no-boost-framerate",
@@ -22,7 +22,7 @@ try:
          # Auto-record: any of these markers, on either camera, starts a recording; it
          # keeps running while any camera still sees one. Both cameras are watched
          # because --aruco-cameras defaults to all of them.
-         "--aruco-markers", "DICT_5X5_250:1,2,3,4,5,6,7,8,9",
+         # "--aruco-markers", "DICT_5X5_250:1,2,3,4,5,6,7,8,9",
         ],
         env={**__import__("os").environ, "RUST_LOG": "info"},
     )

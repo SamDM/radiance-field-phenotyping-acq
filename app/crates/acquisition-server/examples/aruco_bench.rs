@@ -51,12 +51,12 @@ fn time_detect(
     let family = predefined::get_by_name(FAMILY_NAME).expect("known family");
 
     // One warm-up pass so allocator behaviour settles before measuring.
-    let found = detect_markers(gray, family, params).len();
+    let found = detect_markers(gray, &[family], params).markers.len();
 
     let mut times = Vec::with_capacity(runs);
     for _ in 0..runs {
         let t = Instant::now();
-        let _ = detect_markers(gray, family, params);
+        let _ = detect_markers(gray, &[family], params);
         times.push(t.elapsed().as_secs_f64() * 1e3);
     }
     times.sort_by(f64::total_cmp);
@@ -165,9 +165,10 @@ fn main() {
             for boxed in [false, true] {
                 let gray = detector_input(marker_px, k, boxed);
                 let family = predefined::get_by_name(FAMILY_NAME).unwrap();
-                let found = detect_markers(&gray, family, &fast_params())
+                let found = detect_markers(&gray, &[family], &fast_params())
+                    .markers
                     .iter()
-                    .any(|m| m.id == MARKER_ID);
+                    .any(|m| m.marker.id == MARKER_ID);
                 cells.push(if found { 'Y' } else { '.' });
             }
             let px_in_output = marker_px / (2 * k);
