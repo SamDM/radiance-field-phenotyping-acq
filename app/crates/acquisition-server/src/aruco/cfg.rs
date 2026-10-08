@@ -35,6 +35,39 @@ pub struct MarkerSelector {
     pub ids: Vec<usize>,
 }
 
+/// Where a detected marker has to be, and how big, to count as a sighting.
+///
+/// Exists because the same markers can be in view without meaning anything: on the
+/// watering rig every pot carries the same ids, and pots waiting in the rack are visible
+/// at the top of the frame. Only the pot in the gripper should start or sustain a
+/// recording, and *where* a marker is, is what tells them apart.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MarkerGate {
+    /// `[x0, y0, x1, y1]`, as fractions of the frame's width and height. A marker counts
+    /// only if its centre lies inside, edges included.
+    pub roi: [f64; 4],
+    /// Minimum mean side length in full-resolution pixels. `0.0` admits every size.
+    pub min_side_px: f64,
+}
+
+impl MarkerGate {
+    /// Admits every marker: the whole frame, any size.
+    pub const OPEN: MarkerGate = MarkerGate { roi: [0.0, 0.0, 1.0, 1.0], min_side_px: 0.0 };
+
+    /// Whether a marker centred at `rel` (fractions of the frame) with mean side
+    /// `side_px` (full-resolution pixels) counts.
+    pub fn admits(&self, rel: [f64; 2], side_px: f64) -> bool {
+        let [x0, y0, x1, y1] = self.roi;
+        (x0..=x1).contains(&rel[0]) && (y0..=y1).contains(&rel[1]) && side_px >= self.min_side_px
+    }
+}
+
+impl Default for MarkerGate {
+    fn default() -> Self {
+        MarkerGate::OPEN
+    }
+}
+
 /// Everything the watcher needs. An empty `markers` disables it entirely — no detector
 /// thread is spawned.
 #[derive(Debug, Clone)]
@@ -53,6 +86,9 @@ pub struct AutoRecordCfg {
     /// Consecutive round-robin passes with no sighting on any camera before stopping.
     pub stop_after: u32,
     pub cooldown: Duration,
+    /// Which detections count. Applied before the trigger, so a marker outside it neither
+    /// starts nor sustains a recording.
+    pub gate: MarkerGate,
     /// Single adaptive-threshold window size, pinned to avoid the detector's 3-pass sweep.
     pub thresh_win: u32,
     pub min_perimeter_rate: f64,
@@ -70,6 +106,7 @@ impl Default for AutoRecordCfg {
             window: super::DEFAULT_WINDOW,
             stop_after: super::DEFAULT_STOP_AFTER,
             cooldown: super::DEFAULT_COOLDOWN,
+            gate: MarkerGate::OPEN,
             thresh_win: super::DEFAULT_THRESH_WIN,
             min_perimeter_rate: super::DEFAULT_MIN_PERIMETER_RATE,
         }
@@ -121,3 +158,33 @@ impl std::fmt::Display for MarkerCfgError {
 }
 
 impl std::error::Error for MarkerCfgError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_open_gate_admits_everything() {
+        for rel in [[0.0, 0.0], [1.0, 1.0], [0.5, 0.02]] {
+            assert!(MarkerGate::OPEN.admits(rel, 0.0));
+        }
+    }
+
+    #[test]
+    fn the_roi_is_tested_on_the_centre_inclusively() {
+        let gate = MarkerGate { roi: [0.6, 0.15, 1.0, 0.8], min_side_px: 0.0 };
+        // Measured on the rig: a held marker, and a rack pot at the top of the frame.
+        assert!(gate.admits([0.85, 0.48], 200.0));
+        assert!(!gate.admits([0.64, 0.09], 140.0));
+        assert!(gate.admits([0.6, 0.15], 200.0), "edges are inside");
+        assert!(!gate.admits([0.59, 0.5], 200.0));
+        assert!(!gate.admits([0.8, 0.81], 200.0));
+    }
+
+    #[test]
+    fn the_size_floor_is_inclusive() {
+        let gate = MarkerGate { roi: [0.0, 0.0, 1.0, 1.0], min_side_px: 150.0 };
+        assert!(gate.admits([0.5, 0.5], 150.0));
+        assert!(!gate.admits([0.5, 0.5], 149.9));
+    }
+}

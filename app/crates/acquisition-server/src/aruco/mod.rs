@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 mod cfg;
-pub use cfg::{AutoRecordCfg, DownscaleMode, MarkerCfgError, MarkerSelector};
+pub use cfg::{AutoRecordCfg, DownscaleMode, MarkerCfgError, MarkerGate, MarkerSelector};
 
 #[cfg(feature = "aruco-auto-record")]
 pub mod synth;

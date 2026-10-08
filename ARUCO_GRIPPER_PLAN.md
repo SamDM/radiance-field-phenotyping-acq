@@ -1,7 +1,7 @@
 # Aruco auto-record on the watering machine: findings and plan
 
 Temporary working note (2026-10-07, updated 2026-10-08). Delete once the plan below is implemented or
-dropped. No code has been changed for it yet.
+dropped. Steps 0, A and C are implemented; B, D and E are not.
 
 ## The setting
 
@@ -76,7 +76,23 @@ Checked:
   - 17-08-12 starts at frame 2 and stops at frame 18 (markers in frames 1–15).
   - 16-16-13 starts on the rack pot, as expected until A lands.
 
-### A. Marker gate: count a marker only if it is in the right place
+### A. Marker gate: count a marker only if it is in the right place — done (2026-10-08)
+
+Implemented as `MarkerGate` in `aruco/cfg.rs`, applied in `worker::detect`, with
+`--aruco-roi` and `--aruco-min-side-px`. Each configured marker is logged at debug level
+("aruco marker": camera, position, side, confidence, admitted). `launch-server.py`
+enables that logging.
+
+Checked by replaying recordings through the real watcher at the rig's timing (1 s per
+pair, cam1 about 8 ms after cam0), with ROI `0.4,0.15,1.0,0.9`:
+- The rack pot (16-16-13, looped for 30 s) never starts a recording. Without the ROI,
+  it starts one and holds it open.
+- 17-06-39 starts at frame 5 and stops at 60; 17-08-12 starts at 4 and stops at 21.
+- 2026-09-22 never starts a recording.
+
+The ROI went into `launch-server.py` wider in x than first proposed below. y is what
+separates the rack from the gripper, and a loose x keeps the planned camera adjustment
+from pushing the pot out. Original notes:
 
 - Add `--aruco-roi x0,y0,x1,y1`: the rectangle the marker's centre must fall in, as
   fractions of the frame. **This is the primary test.** Held markers sit at y ≥ 0.20
@@ -122,7 +138,19 @@ Checked:
   B could save one frame per N degrees of rotation, which gives even coverage for
   reconstruction.
 
-### C. Tune the trigger for this cycle
+### C. Tune the trigger for this cycle — done (2026-10-08), pending a rig test
+
+In `launch-server.py`: markers `DICT_6X6_50:1..8`, ROI `0.4,0.15,1.0,0.9`,
+`--aruco-stop-after 3`, `--frames 300`.
+
+**Correction to the pass length.** The cameras are synchronised: their frames arrive
+6–13 ms apart, faster than one detection (17–20 ms). So the second camera's frame is
+always dropped while the first is examined, and each camera is checked every other
+frame. At 1 fps a pass takes 2 s, not 0.4 s. `--aruco-stop-after 3` therefore stops
+about 6 s after the pot leaves; the replay confirms it (last marker frame + 6 or 7).
+Start latency is 2–4 s: two sightings on one camera, 2 s apart.
+
+Original notes:
 
 - `--aruco-markers DICT_6X6_50:1,2,3,4,5,6,7,8`. The `launch-server.py` line
   currently says `DICT_5X5_250:1..9` and is commented out.

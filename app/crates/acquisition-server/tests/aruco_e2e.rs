@@ -27,7 +27,7 @@ use time::OffsetDateTime;
 
 use acquisition_server::aruco::synth;
 use acquisition_server::aruco::{
-    AutoAction, AutoRecordCfg, AutoRecordWatcher, MarkerSelector, PollCtx,
+    AutoAction, AutoRecordCfg, AutoRecordWatcher, MarkerGate, MarkerSelector, PollCtx,
 };
 
 /// Small enough to keep the test fast, large enough to stay realistic.
@@ -137,8 +137,8 @@ fn an_empty_scene_never_triggers() {
 }
 
 /// A marker that is not in the configured id list must not trigger, even though it is a
-/// perfectly valid marker of the configured family. This is the merged-family code list
-/// doing its job.
+/// perfectly valid marker of the configured family. The detector identifies it as itself,
+/// and the marker set drops it.
 #[test]
 fn an_unconfigured_marker_of_the_same_family_does_not_trigger() {
     let frame = frame_from_scene(
@@ -212,6 +212,50 @@ fn detects_across_the_useful_range_of_marker_sizes() {
             marker_px / 4
         );
     }
+}
+
+/// `cfg`, with only markers inside `gate` counting.
+fn gated_cfg(gate: MarkerGate) -> AutoRecordCfg {
+    AutoRecordCfg { gate, ..cfg(1) }
+}
+
+/// The rack-pot case: a configured marker in plain view, but outside the region of
+/// interest, must not start a recording. `synth` centres the marker, at (0.5, 0.5).
+#[test]
+fn a_marker_outside_the_roi_does_not_start_a_recording() {
+    let (present, _) = frames(240);
+    let off_centre = MarkerGate { roi: [0.0, 0.0, 0.4, 0.4], ..MarkerGate::OPEN };
+    let mut w = AutoRecordWatcher::new(&gated_cfg(off_centre), 1).unwrap();
+    assert_eq!(pump(&mut w, &present, 0, idle(), 200), None);
+
+    let around_centre = MarkerGate { roi: [0.4, 0.4, 0.6, 0.6], ..MarkerGate::OPEN };
+    let mut w = AutoRecordWatcher::new(&gated_cfg(around_centre), 1).unwrap();
+    assert!(matches!(pump(&mut w, &present, 0, idle(), 200), Some(AutoAction::Start { .. })));
+}
+
+/// Nor may it keep one alive: a rack pot in view must not hold a recording open after the
+/// gripped pot has gone.
+#[test]
+fn a_marker_outside_the_roi_does_not_sustain_a_recording() {
+    let (present, _) = frames(240);
+    let off_centre = MarkerGate { roi: [0.0, 0.0, 0.4, 0.4], ..MarkerGate::OPEN };
+    let mut w = AutoRecordWatcher::new(&gated_cfg(off_centre), 1).unwrap();
+    assert_eq!(pump(&mut w, &present, 0, auto_recording(), 200), Some(AutoAction::Stop));
+}
+
+/// The size floor is measured in full-resolution pixels, whatever the downscale.
+#[test]
+fn the_size_floor_is_in_full_resolution_pixels() {
+    let side = synth::marker_side_px(&predefined::DICT_5X5_250, 240) as f64;
+    let (present, _) = frames(240);
+
+    let too_big = MarkerGate { min_side_px: side * 1.2, ..MarkerGate::OPEN };
+    let mut w = AutoRecordWatcher::new(&gated_cfg(too_big), 1).unwrap();
+    assert_eq!(pump(&mut w, &present, 0, idle(), 200), None);
+
+    let below = MarkerGate { min_side_px: side * 0.8, ..MarkerGate::OPEN };
+    let mut w = AutoRecordWatcher::new(&gated_cfg(below), 1).unwrap();
+    assert!(matches!(pump(&mut w, &present, 0, idle(), 200), Some(AutoAction::Start { .. })));
 }
 
 /// Dropping the watcher must shut the detector thread down rather than leaking it or

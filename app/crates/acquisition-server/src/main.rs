@@ -234,9 +234,27 @@ pub struct AutoRecordArgs {
     pub aruco_window: u8,
 
     /// Consecutive passes over every watched camera, finding no marker anywhere, before
-    /// stopping. One pass costs `--aruco-interval-ms` per camera.
+    /// stopping. A pass examines one frame per camera, so it takes at least
+    /// `--aruco-interval-ms` per camera. With synchronised cameras it takes one frame
+    /// period per camera instead: their frames arrive together, and a frame that lands
+    /// while another camera's is still being examined is skipped.
     #[arg(long, default_value_t = aruco::DEFAULT_STOP_AFTER)]
     pub aruco_stop_after: u32,
+
+    /// Only markers whose centre lies in this rectangle count, as `x0,y0,x1,y1` in
+    /// fractions of the frame (0,0 is top left). A marker outside it neither starts nor
+    /// sustains a recording. Defaults to the whole frame.
+    ///
+    /// Use it to ignore markers that are in view but not at the station, such as pots
+    /// waiting in a rack. Run with `RUST_LOG=acquisition_server::aruco=debug` to log
+    /// every marker's position and size.
+    #[arg(long, value_parser = parse_roi)]
+    pub aruco_roi: Option<[f64; 4]>,
+
+    /// Only markers whose mean side is at least this many pixels, measured in the
+    /// full-resolution frame, count. Defaults to 0, which admits every size.
+    #[arg(long, default_value_t = 0.0)]
+    pub aruco_min_side_px: f64,
 
     /// Debounce in seconds after any automatic start or stop.
     #[arg(long, default_value_t = aruco::DEFAULT_COOLDOWN.as_secs())]
@@ -277,6 +295,28 @@ fn parse_marker_selector(s: &str) -> Result<aruco::MarkerSelector, String> {
     Ok(aruco::MarkerSelector { family: family.to_string(), ids })
 }
 
+/// Parse `x0,y0,x1,y1`, each a fraction of the frame, into a rectangle with positive area.
+#[cfg(feature = "aruco-auto-record")]
+fn parse_roi(s: &str) -> Result<[f64; 4], String> {
+    let values = s
+        .split(',')
+        .map(|v| {
+            let v = v.trim();
+            v.parse::<f64>().map_err(|_| format!("`{v}` is not a number"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let [x0, y0, x1, y1] = values[..] else {
+        return Err(format!("expected `x0,y0,x1,y1`, got `{s}`"));
+    };
+    if !values.iter().all(|v| (0.0..=1.0).contains(v)) {
+        return Err(format!("every value must be within 0.0..=1.0, got `{s}`"));
+    }
+    if x0 >= x1 || y0 >= y1 {
+        return Err(format!("need x0 < x1 and y0 < y1, got `{s}`"));
+    }
+    Ok([x0, y0, x1, y1])
+}
+
 impl Args {
     /// Assemble the watcher configuration.
     ///
@@ -294,6 +334,10 @@ impl Args {
             window: self.aruco.aruco_window,
             stop_after: self.aruco.aruco_stop_after,
             cooldown: std::time::Duration::from_secs(self.aruco.aruco_cooldown_secs),
+            gate: aruco::MarkerGate {
+                roi: self.aruco.aruco_roi.unwrap_or(aruco::MarkerGate::OPEN.roi),
+                min_side_px: self.aruco.aruco_min_side_px,
+            },
             thresh_win: self.aruco.aruco_thresh_win,
             min_perimeter_rate: self.aruco.aruco_min_perimeter_rate,
         }
@@ -341,6 +385,12 @@ impl Args {
                 a.aruco_min_perimeter_rate
             ));
         }
+        if !(a.aruco_min_side_px >= 0.0 && a.aruco_min_side_px.is_finite()) {
+            return Err(format!(
+                "--aruco-min-side-px must be a finite number >= 0 (got {})",
+                a.aruco_min_side_px
+            ));
+        }
         if let Some(cams) = &a.aruco_cameras {
             if cams.is_empty() {
                 return Err("--aruco-cameras was given but lists no cameras".to_string());
@@ -364,6 +414,19 @@ impl Args {
 #[cfg(test)]
 mod tests {
     use super::parse_zoom_size;
+
+    #[cfg(feature = "aruco-auto-record")]
+    #[test]
+    fn roi_parses_and_rejects_malformed_rectangles() {
+        use super::parse_roi;
+        assert_eq!(parse_roi("0.6, 0.15,1,0.8").unwrap(), [0.6, 0.15, 1.0, 0.8]);
+        assert!(parse_roi("0.6,0.15,1").is_err(), "too few values");
+        assert!(parse_roi("0.6,0.15,1,0.8,0").is_err(), "too many values");
+        assert!(parse_roi("0.6,0.15,1.2,0.8").is_err(), "outside the frame");
+        assert!(parse_roi("0.6,0.8,1,0.15").is_err(), "y0 > y1");
+        assert!(parse_roi("0.6,0.15,0.6,0.8").is_err(), "zero width");
+        assert!(parse_roi("a,0,1,1").is_err());
+    }
 
     #[test]
     fn even_values_round_up_to_odd() {

@@ -16,7 +16,7 @@ use tracing::{debug, info, warn};
 
 use super::markers::MarkerSet;
 use super::trigger::{TriggerCfg, TriggerState};
-use super::worker::{self, DetectJob, DetectOutcome};
+use super::worker::{self, DetectJob, DetectOutcome, Selection};
 use super::{AutoAction, AutoRecordCfg, DownscaleMode, MarkerCfgError, PollCtx};
 
 /// How often to report dropped frames. Frequent enough to notice a misconfiguration,
@@ -97,12 +97,18 @@ impl AutoRecordWatcher {
 
         // Capacity 1 with `try_send`: a busy worker means the frame is dropped, never
         // queued. A frame that waited in a queue cannot answer "is the marker there now?".
+        let selection = Selection {
+            markers,
+            gate: cfg.gate,
+            scale: 2.0 * cfg.downscale as f64,
+        };
+
         let (job_tx, job_rx) = sync_channel::<DetectJob>(1);
         let (out_tx, out_rx) = channel::<DetectOutcome>();
 
         let worker = std::thread::Builder::new()
             .name("aruco-detect".into())
-            .spawn(move || worker::run(job_rx, out_tx, markers, params))
+            .spawn(move || worker::run(job_rx, out_tx, selection, params))
             .expect("spawn aruco detection thread");
 
         info!(
@@ -115,6 +121,8 @@ impl AutoRecordWatcher {
             confirmations = cfg.confirmations,
             window = cfg.window,
             stop_after = cfg.stop_after,
+            roi = ?cfg.gate.roi,
+            min_side_px = cfg.gate.min_side_px,
             "aruco auto-record enabled"
         );
 

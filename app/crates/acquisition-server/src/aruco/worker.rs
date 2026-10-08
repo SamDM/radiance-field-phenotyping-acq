@@ -1,6 +1,6 @@
 //! The detection thread.
 //!
-//! Owns the marker set and detector parameters, both built once at startup — the
+//! Owns the marker set, the gate and the detector parameters, all built once at startup — the
 //! detector is stateless, so there is nothing to recreate per frame and nothing to
 //! synchronise. Runs until its job channel closes, which is how the watcher's `Drop`
 //! shuts it down.
@@ -13,6 +13,7 @@ use image::GrayImage;
 use tracing::debug;
 
 use super::markers::{Hit, MarkerSet};
+use super::MarkerGate;
 
 pub struct DetectJob {
     pub cam_idx: usize,
@@ -53,14 +54,60 @@ pub fn detector_params(thresh_win: u32, min_perimeter_rate: f64) -> DetectorPara
     }
 }
 
-/// Run every configured family over one image and collect the configured markers found.
-pub fn detect(markers: &MarkerSet, params: &DetectorParams, gray: &GrayImage) -> Vec<Hit> {
+/// Which detections count, and how to measure them against the full-resolution frame.
+pub struct Selection {
+    pub markers: MarkerSet,
+    pub gate: MarkerGate,
+    /// Full-resolution pixels per detector-input pixel: `2 * downscale`, since both
+    /// downscale modes reduce each `k`×`k` block of Bayer quads to one pixel.
+    pub scale: f64,
+}
+
+/// Run every configured family over one image and collect the configured markers found
+/// inside the gate.
+pub fn detect(
+    selection: &Selection,
+    params: &DetectorParams,
+    gray: &GrayImage,
+    cam_idx: usize,
+) -> Vec<Hit> {
+    let (w, h) = (gray.width() as f64, gray.height() as f64);
     let mut hits = Vec::new();
-    for found in detect_markers(gray, markers.families(), params).markers {
-        if let Some(hit) = markers.resolve(found.dictionary, found.marker.id) {
-            if !hits.contains(hit) {
-                hits.push(hit.clone());
-            }
+    for found in detect_markers(gray, selection.markers.families(), params).markers {
+        let Some(hit) = selection.markers.resolve(found.dictionary, found.marker.id) else {
+            continue;
+        };
+        let c = found.marker.corners.map(|p| p.0);
+        let centre = [
+            c.iter().map(|p| p[0]).sum::<f64>() / 4.0,
+            c.iter().map(|p| p[1]).sum::<f64>() / 4.0,
+        ];
+        let rel = [centre[0] / w, centre[1] / h];
+        let side_px = (0..4)
+            .map(|i| {
+                let (a, b) = (c[i], c[(i + 1) % 4]);
+                (a[0] - b[0]).hypot(a[1] - b[1])
+            })
+            .sum::<f64>()
+            / 4.0
+            * selection.scale;
+        let admitted = selection.gate.admits(rel, side_px);
+
+        // Every configured marker, admitted or not, so the ROI and size floor can be
+        // tuned from the log of a real run.
+        debug!(
+            camera = cam_idx,
+            marker = %format!("{}:{}", hit.family, hit.id),
+            x = format_args!("{:.3}", rel[0]),
+            y = format_args!("{:.3}", rel[1]),
+            side_px = format_args!("{side_px:.0}"),
+            confidence = format_args!("{:.2}", found.confidence),
+            admitted,
+            "aruco marker"
+        );
+
+        if admitted && !hits.contains(hit) {
+            hits.push(hit.clone());
         }
     }
     hits
@@ -69,14 +116,14 @@ pub fn detect(markers: &MarkerSet, params: &DetectorParams, gray: &GrayImage) ->
 pub fn run(
     jobs: Receiver<DetectJob>,
     results: Sender<DetectOutcome>,
-    markers: MarkerSet,
+    selection: Selection,
     params: DetectorParams,
 ) {
     // Ends when the watcher drops its sender.
     for job in jobs {
         let queued_ms = job.dispatched_at.elapsed().as_secs_f64() * 1e3;
         let started = Instant::now();
-        let hits = detect(&markers, &params, &job.gray);
+        let hits = detect(&selection, &params, &job.gray, job.cam_idx);
         let detect_ms = started.elapsed().as_secs_f64() * 1e3;
 
         debug!(
