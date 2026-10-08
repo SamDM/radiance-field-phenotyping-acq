@@ -29,8 +29,6 @@ while watering it, and puts it back. Each pot should become one recording.
 Measured with scratch tools: the production downscale and detector run over recorded
 raw Bayer PNGs.
 
-- **`launch-server.py` names the wrong family.** It says `DICT_5X5_250:1..9`, which
-  can never match the pots. Use `DICT_6X6_50`.
 - **The far pot is detected reliably.** In `~/phenominator/2026-10-07/16-16-13`, with
   production settings (k=3, threshold window 13, error correction 0.2), it is detected
   on both cameras in every frame:
@@ -188,48 +186,19 @@ Send the client a notice like "no new frames for N s" instead of auto-stopping. 
 in place a stalled recording costs nothing, and stopping would lose the rest of the
 turn if the machine resumes on the same pot.
 
-## arucotools main (4a57f47) vs our pin (fdf2ad9)
+## arucotools features left unused
 
-41 commits ahead. Tried with a scratch crate on the 2026-10-07 frames and all 792
-frames from 2026-09-22.
-
-**Breaking API changes** that the bump has to absorb:
-- One `MarkerFamily` type replaces `OwnedMarkerFamily`, `StaticMarkerFamily` and
-  `HasMarkerFamily`. Fields are now private behind accessors. `nbits_side_pattern` is
-  now `nbits_pattern_side`, and `nbits_hamming` is now `nbits_max_correction`.
-- `detect_markers(&img, &[&MarkerFamily], &params)` takes several dictionaries and
-  returns `Detections { markers: Vec<DetectedMarker { marker, dictionary, confidence }>,
-  rejected: Vec<RejectedCandidate { corners, reasons }> }`.
-- Defaults moved to OpenCV 5.0.0: `min_marker_distance_rate` 0.125, a border-error
-  budget, `valid_bit_id_threshold` 0.49. On our frames, detections and positions are
-  unchanged.
-
-**What it means for the server:**
-- **Most of `aruco/markers.rs` can go.** The library now finds candidates once and
-  identifies them against every dictionary passed in, resolving overlapping
-  dictionaries to one marker by confidence and then list order. So pass the
-  configured predefined families whole, and keep the hits whose id is configured.
-  - This is also more robust than a shrunken code list: an unconfigured id is
-    recognised as itself and dropped, instead of being error-corrected onto a
-    configured one.
-  - The extra cost is negligible: a handful of candidates against 50 codes.
-  - Zero false positives over the 792 frames with the full `DICT_6X6_50`.
-- **`confidence`** is available as an extra false-positive guard. Far-pot markers read
-  0.85–0.92, large markers 0.94–1.0. It's not a size gate.
-- **`rejected`** candidates help diagnose missed detections on the rig.
-- **Aruco3 mode is fast, but its size cutoff is coarse.**
-  - Its minimum marker size is roughly `(32 + r·M)·2k` full-res px. In practice the
-    cutoff lands about 1.2–1.4× above that. At k=3 with r=0.02, a 260–290 px marker is
-    missed and a ≥ 390 px one detected; with r=0.05, a 390–430 px marker is missed and
-    a ≥ 520 px one detected.
-  - It runs in 7–14 ms against 17 ms for our current settings. Detection isn't a
-    bottleneck at 17 ms per 200 ms.
-  - So keep the explicit gate (plan A) and our standard settings.
-- **AprilTag mode** takes ~100 ms at k=3, 6× our settings, with slightly tighter
-  corners. For the offline calibration, not for triggering.
-- **`arucotools-calib`** (multi-camera bundle adjustment, unknown marker layout,
-  stereo-rig constraint, turntable example) is for offline processing. It's out of
-  scope for the recorder.
+The update itself is step 0. These newer features were tried on the 2026-10-07 frames
+and not adopted:
+- **`rejected` candidates**, with a reason per dictionary. Not used yet, but the first
+  thing to log if the rig misses markers, e.g. under growth-light reflections.
+- **`confidence`**: far-pot markers read 0.85–0.92, held ones 0.86–1.0, so it neither
+  separates them nor gates size. No false positives have needed it as a guard.
+- **Aruco3 mode** is faster (7–14 ms against 17 ms), but its size cutoff is coarse:
+  about 1.2–1.4× above its `(32 + r·M)·2k` px formula. The explicit gate (A) is
+  predictable, and detection isn't a bottleneck at one detection per second.
+- **AprilTag corner refinement**: ~100 ms at k=3, with tighter corners. That's for
+  the offline calibration, not for triggering.
 
 ## Measurements on gripped pots (2026-10-07 17-06-39 and 17-08-12)
 
@@ -271,6 +240,12 @@ production settings: k=3, full `DICT_6X6_50`.
 
 ## Still needed
 
-- Re-measure the ROI after the cameras are adjusted to stop clipping the ring.
-- A run with watering and a full rotation, for the rotation duration (`--frames`) and
-  the change metric while water is flowing.
+Rig test with `launch-server.py` as committed (debug logging on):
+- After adjusting the cameras, check the "aruco marker" lines. Every held marker should be
+  `admitted=true` through a full turn, and any rack pot `admitted=false`. The ROI's top
+  edge (0.15) is the tight side: the lowest held marker so far was at y 0.20.
+- Whether the watering arm hides the markers for longer than ~6 s (`--aruco-stop-after`).
+- A full turn with watering: its duration (is `--frames 300` enough?), and whether
+  flowing water alone keeps the change score above 0.5% (the `groups_skipped` count
+  at the end of each recording).
+- The longest normal pause during a pot, to size D's notice.
