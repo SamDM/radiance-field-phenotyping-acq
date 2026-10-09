@@ -127,7 +127,15 @@ enabled with `--aruco-min-change-pct 0.5` in `launch-server.py`.
   unchanged.
 - A finished auto-recording logs `groups_saved` and `groups_skipped`; each group's score
   is logged at debug level ("frame group change").
-- Thumbnail cost measured at 1.0 ms per camera.
+- **Fixed after the first rig test (2026-10-09):** a stalled pot (`2026-10-09/11-38-41`,
+  104 s) saved every group. The scene was dimmer and the sensor noisier (mean |Δ| 4.6
+  against 2.7 on 10-07), and the thumbnail averaged only 16 green samples per pixel,
+  so noise alone pushed 0.5–1% of pixels past 16 levels. The thumbnail now averages
+  every green site per pixel (288 samples, `bayer_rggb_box_average` at stride 12):
+  - the stall scores 0.00% and would have saved 1 group of 103;
+  - turning still scores 1.3–27%, and the 10-07 recordings keep 28 of 71 and 28 of 36,
+    as before;
+  - it costs 3.8 ms per camera instead of 1 ms.
 
 On the recordings, at 0.5%:
 - 17-06-39 keeps 12 of 52 held frames: 2, 3, 29 (slow drift reached 0.59%), and the

@@ -8,8 +8,8 @@
 //!
 //! # The metric
 //!
-//! Each frame is reduced to a ~147×147 thumbnail (green subsample at quad stride 3, then a
-//! 4×4 box average), and the score is the share of thumbnail pixels whose difference from
+//! Each frame is reduced to a ~147×147 thumbnail (the average of all green sites in each
+//! 24×24 pixel block), and the score is the share of thumbnail pixels whose difference from
 //! the reference strays more than [`LEVEL`] grey levels from the *median* difference.
 //! Subtracting the median cancels a global brightness shift — exposure creep, a light
 //! flickering — that changes every pixel by the same amount without moving anything.
@@ -18,35 +18,24 @@
 //! pot 1.4–7% between adjacent frames. Sensor noise at gain 10 has p99 |Δ| = 8, so
 //! [`LEVEL`] sits at twice that.
 
-use acquisition_common::downscale::bayer_rggb_green_subsample;
+use acquisition_common::downscale::bayer_rggb_box_average;
 use image::GrayImage;
 
-/// Quad stride of the green subsample.
-const SUBSAMPLE: u32 = 3;
-/// Side of the box average applied after the subsample.
-const BOX: u32 = 4;
+/// Quad stride of the box average: each thumbnail pixel averages every green site in a
+/// `STRIDE`×`STRIDE` block of Bayer quads, 288 of them.
+const STRIDE: u32 = 12;
 /// Grey levels a pixel's difference must stray from the median difference to count.
 pub const LEVEL: i16 = 16;
 
-/// Shrink a raw RGGB mosaic to the thumbnail the metric compares.
+/// Shrink a raw RGGB mosaic to the thumbnail the metric compares: ~147×147 for the rig's
+/// 3536×3536 sensor.
 ///
-/// About 1 ms for the rig's 3536×3536 sensor: the subsample reads one byte per output
-/// pixel, and the box average runs on the already small result.
+/// Averaging every green site, rather than sampling a few, is what keeps sensor noise
+/// far below [`LEVEL`]. A thumbnail built from 16 samples per pixel was noisy enough on a
+/// dim day (2026-10-09) that a still scene scored 0.5–1% and every group was saved; 288
+/// samples cut the noise about fourfold.
 pub fn thumbnail(data: &[u8], w: u32, h: u32) -> GrayImage {
-    let green = bayer_rggb_green_subsample(data, w, h, SUBSAMPLE);
-    let (gw, gh) = green.dimensions();
-    let (tw, th) = ((gw / BOX).max(1), (gh / BOX).max(1));
-    GrayImage::from_fn(tw, th, |tx, ty| {
-        let mut sum = 0u32;
-        let mut n = 0u32;
-        for y in ty * BOX..((ty + 1) * BOX).min(gh) {
-            for x in tx * BOX..((tx + 1) * BOX).min(gw) {
-                sum += green.get_pixel(x, y).0[0] as u32;
-                n += 1;
-            }
-        }
-        image::Luma([(sum / n.max(1)) as u8])
-    })
+    bayer_rggb_box_average(data, w, h, STRIDE)
 }
 
 /// Share of pixels, in `[0, 1]`, whose difference strays more than [`LEVEL`] from the
@@ -160,9 +149,9 @@ mod tests {
     }
 
     #[test]
-    fn the_thumbnail_is_the_subsample_shrunk_by_the_box() {
+    fn the_thumbnail_has_one_pixel_per_block() {
         let t = thumbnail(&mosaic(gradient), W, H);
-        assert_eq!(t.dimensions(), (W / (2 * SUBSAMPLE) / BOX, H / (2 * SUBSAMPLE) / BOX));
+        assert_eq!(t.dimensions(), (W / (2 * STRIDE), H / (2 * STRIDE)));
     }
 
     #[test]
