@@ -49,6 +49,7 @@ pub fn run(
             args.auto_adjust_duration_secs,
             args.auto_adjust_minimize_gain,
             args.auto_adjust_no_boost_framerate,
+            args.fixed_sensor_cfg(),
             rate_control,
         ),
         preview_state: preview::PreviewIterState::new(

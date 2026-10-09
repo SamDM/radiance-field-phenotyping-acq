@@ -23,6 +23,9 @@ pub(super) struct SensorCfgIterState {
     auto_adjust_duration_secs: u64,
     auto_adjust_minimize_gain: bool,
     auto_adjust_no_boost_framerate: bool,
+    /// Settings fixed on the command line. Applied at startup; the startup auto-adjust
+    /// tunes only the ones left `None`.
+    fixed: wire::SensorCfg,
     /// Which camera feature the framerate setting has to be written to and read back
     /// from. Fixed at startup; see [`RateControl`].
     rate_control: RateControl,
@@ -33,6 +36,7 @@ impl SensorCfgIterState {
         auto_adjust_duration_secs: u64,
         auto_adjust_minimize_gain: bool,
         auto_adjust_no_boost_framerate: bool,
+        fixed: wire::SensorCfg,
         rate_control: RateControl,
     ) -> Self {
         SensorCfgIterState {
@@ -40,6 +44,7 @@ impl SensorCfgIterState {
             auto_adjust_duration_secs,
             auto_adjust_minimize_gain,
             auto_adjust_no_boost_framerate,
+            fixed,
             rate_control,
         }
     }
@@ -291,13 +296,51 @@ fn handle_unitialized(
     if !matches!(state.cfg_values, SensorCfgActivity::Unitialized) || is_busy {
         return;
     }
+
+    // Settings fixed on the command line go on first, so the auto-adjust below starts
+    // from them and they show as set while it runs.
+    let fixed = state.fixed.clone();
+    let any_fixed =
+        fixed.exposure_us.is_some() || fixed.gain.is_some() || fixed.white_balance.is_some();
+    if any_fixed {
+        match apply_settings(camera_array, &fixed, state.rate_control) {
+            Ok(applied) => {
+                info!(?fixed, "applied sensor settings from the command line");
+                state.cfg_values = SensorCfgActivity::Set(applied);
+            }
+            Err(e) => {
+                sensor_cfg_failed(
+                    &mut state.cfg_values,
+                    evt_tx,
+                    None,
+                    format!("failed to apply sensor settings from the command line: {e}"),
+                );
+                return;
+            }
+        }
+    }
+
+    let adjust = |value: Option<f64>| match value {
+        Some(_) => pylon::cfg::AutoParam::NoAdjust,
+        None => pylon::cfg::AutoParam::Adjust(None),
+    };
+    let tune_gain = adjust(fixed.gain);
+    let tune_exposure = adjust(fixed.exposure_us);
+    let tune_whitebalance = fixed.white_balance.is_none();
+    if matches!(tune_gain, pylon::cfg::AutoParam::NoAdjust)
+        && matches!(tune_exposure, pylon::cfg::AutoParam::NoAdjust)
+        && !tune_whitebalance
+    {
+        // Everything is fixed: nothing left to auto-adjust.
+        return;
+    }
     start_auto_adjust(
         camera_array,
         state,
         0.5,
-        pylon::cfg::AutoParam::Adjust(None),
-        pylon::cfg::AutoParam::Adjust(None),
-        true,
+        tune_gain,
+        tune_exposure,
+        tune_whitebalance,
         None, // no specific client to inform if this fails
         evt_tx,
     );

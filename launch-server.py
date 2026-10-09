@@ -17,6 +17,10 @@ try:
          # of that pot, so leave plenty of room.
          "--frames", "300",
          "--framerate", "1.0",
+         # The growth lights are constant, so fix the exposure rather than auto-adjusting
+         # it at startup. Gain and white balance are still auto-adjusted at startup;
+         # add "--gain" / "--white-balance" to fix those too.
+         "--exposure-us", "8000",
         #  "--auto-adjust-duration-secs", "30",
         #  "--auto-adjust-minimize-gain",
         #  "--auto-adjust-no-boost-framerate",

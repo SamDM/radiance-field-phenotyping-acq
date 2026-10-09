@@ -100,6 +100,24 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = DEFAULT_FRAME_FORMAT)]
     pub frame_format: FrameFormat,
 
+    /// Fix the exposure time, in microseconds, instead of auto-adjusting it at startup.
+    ///
+    /// The startup auto-adjust tunes only what is not fixed here: give none of
+    /// `--exposure-us`, `--gain` and `--white-balance` for the full auto-adjust, all three
+    /// to skip it, or some to fix those and let it tune the rest. Clients can still change
+    /// every setting afterwards.
+    #[arg(long)]
+    pub exposure_us: Option<f64>,
+
+    /// Fix the gain, in dB, instead of auto-adjusting it at startup. See `--exposure-us`.
+    #[arg(long)]
+    pub gain: Option<f64>,
+
+    /// Fix the white balance as red, green and blue ratios, e.g. `1.6,1.0,2.1`, instead of
+    /// auto-adjusting it at startup. See `--exposure-us`.
+    #[arg(long, value_parser = parse_white_balance)]
+    pub white_balance: Option<(f64, f64, f64)>,
+
     /// Timeout for auto-adjust convergence in seconds.
     #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_DURATION_SECS)]
     pub auto_adjust_duration_secs: u64,
@@ -305,6 +323,24 @@ fn parse_marker_selector(s: &str) -> Result<aruco::MarkerSelector, String> {
     Ok(aruco::MarkerSelector { family: family.to_string(), ids })
 }
 
+/// Parse `r,g,b` white-balance ratios, each positive.
+fn parse_white_balance(s: &str) -> Result<(f64, f64, f64), String> {
+    let values = s
+        .split(',')
+        .map(|v| {
+            let v = v.trim();
+            v.parse::<f64>().map_err(|_| format!("`{v}` is not a number"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let [r, g, b] = values[..] else {
+        return Err(format!("expected `r,g,b`, got `{s}`"));
+    };
+    if !values.iter().all(|v| *v > 0.0 && v.is_finite()) {
+        return Err(format!("every ratio must be positive, got `{s}`"));
+    }
+    Ok((r, g, b))
+}
+
 /// Parse `x0,y0,x1,y1`, each a fraction of the frame, into a rectangle with positive area.
 #[cfg(feature = "aruco-auto-record")]
 fn parse_roi(s: &str) -> Result<[f64; 4], String> {
@@ -328,6 +364,39 @@ fn parse_roi(s: &str) -> Result<[f64; 4], String> {
 }
 
 impl Args {
+    /// The sensor settings fixed on the command line, applied at startup in place of
+    /// auto-adjusting them.
+    pub fn fixed_sensor_cfg(&self) -> acquisition_common::protocol::SensorCfg {
+        acquisition_common::protocol::SensorCfg {
+            exposure_us: self.exposure_us,
+            gain: self.gain,
+            white_balance: self.white_balance,
+            // Set by `--framerate` through the trigger configuration, not here.
+            framerate: None,
+        }
+    }
+
+    /// Check the fixed sensor settings before any camera is opened.
+    pub fn validate_sensor(&self) -> Result<(), String> {
+        if let Some(e) = self.exposure_us {
+            // An exposure longer than the frame period would quietly lower the framerate.
+            let period_us = 1e6 / self.framerate;
+            if !(e > 0.0 && e < period_us) {
+                return Err(format!(
+                    "--exposure-us must be positive and shorter than the frame period \
+                     ({period_us:.0} µs at --framerate {}), got {e}",
+                    self.framerate
+                ));
+            }
+        }
+        if let Some(g) = self.gain {
+            if !(g >= 0.0 && g.is_finite()) {
+                return Err(format!("--gain must be a finite number >= 0, got {g}"));
+            }
+        }
+        Ok(())
+    }
+
     /// Assemble the watcher configuration.
     ///
     /// Without the feature there is nothing to configure, and the default is inert — which
@@ -445,6 +514,15 @@ mod tests {
     }
 
     #[test]
+    fn white_balance_parses_three_positive_ratios() {
+        use super::parse_white_balance;
+        assert_eq!(parse_white_balance("1.6, 1,2.1").unwrap(), (1.6, 1.0, 2.1));
+        assert!(parse_white_balance("1.6,1").is_err());
+        assert!(parse_white_balance("1.6,0,2.1").is_err());
+        assert!(parse_white_balance("a,1,1").is_err());
+    }
+
+    #[test]
     fn even_values_round_up_to_odd() {
         assert_eq!(parse_zoom_size("100").unwrap(), 101);
         assert_eq!(parse_zoom_size("4").unwrap(), 5);
@@ -479,6 +557,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Fail before opening any camera: a rig that starts but can never trigger is worse
     // than one that refuses to start.
     args.validate_aruco()?;
+    args.validate_sensor()?;
 
     plumbing::start_server(args).await
 }
