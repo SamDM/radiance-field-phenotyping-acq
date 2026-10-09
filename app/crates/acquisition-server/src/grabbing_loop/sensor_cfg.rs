@@ -21,6 +21,8 @@ enum SensorCfgActivity {
 pub(super) struct SensorCfgIterState {
     cfg_values: SensorCfgActivity,
     auto_adjust_duration_secs: u64,
+    /// What the startup auto-adjust aims for; client-started ones bring their own.
+    startup_target_brightness: f64,
     auto_adjust_minimize_gain: bool,
     auto_adjust_no_boost_framerate: bool,
     /// Settings fixed on the command line. Applied at startup; the startup auto-adjust
@@ -34,6 +36,7 @@ pub(super) struct SensorCfgIterState {
 impl SensorCfgIterState {
     pub(super) fn new(
         auto_adjust_duration_secs: u64,
+        startup_target_brightness: f64,
         auto_adjust_minimize_gain: bool,
         auto_adjust_no_boost_framerate: bool,
         fixed: wire::SensorCfg,
@@ -42,6 +45,7 @@ impl SensorCfgIterState {
         SensorCfgIterState {
             cfg_values: SensorCfgActivity::Unitialized,
             auto_adjust_duration_secs,
+            startup_target_brightness,
             auto_adjust_minimize_gain,
             auto_adjust_no_boost_framerate,
             fixed,
@@ -334,10 +338,11 @@ fn handle_unitialized(
         // Everything is fixed: nothing left to auto-adjust.
         return;
     }
+    let target_brightness = state.startup_target_brightness;
     start_auto_adjust(
         camera_array,
         state,
-        0.5,
+        target_brightness,
         tune_gain,
         tune_exposure,
         tune_whitebalance,

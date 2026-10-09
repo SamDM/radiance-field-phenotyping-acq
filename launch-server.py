@@ -17,10 +17,14 @@ try:
          # of that pot, so leave plenty of room.
          "--frames", "300",
          "--framerate", "1.0",
-         # The growth lights are constant, so fix the exposure rather than auto-adjusting
-         # it at startup. Gain and white balance are still auto-adjusted at startup;
-         # add "--gain" / "--white-balance" to fix those too.
-         "--exposure-us", "8000",
+         # The growth lights are constant, so fix exposure, gain and white balance
+         # rather than auto-adjusting them at startup. With all three fixed, the startup
+         # auto-adjust doesn't run at all. White balance is fixed because the blue room
+         # and the yellow lights throw the automatic one off.
+         "--exposure-us", "16000",
+         "--gain", "12",
+         "--white-balance", "1,1.6,2.8",  # R,G,B
+        #  "--auto-adjust-target-brightness", "0.1",  # default 0.5
         #  "--auto-adjust-duration-secs", "30",
         #  "--auto-adjust-minimize-gain",
         #  "--auto-adjust-no-boost-framerate",

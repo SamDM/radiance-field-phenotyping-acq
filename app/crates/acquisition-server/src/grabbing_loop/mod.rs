@@ -47,6 +47,7 @@ pub fn run(
         ),
         sensor_cfg_state: sensor_cfg::SensorCfgIterState::new(
             args.auto_adjust_duration_secs,
+            args.auto_adjust_target_brightness,
             args.auto_adjust_minimize_gain,
             args.auto_adjust_no_boost_framerate,
             args.fixed_sensor_cfg(),

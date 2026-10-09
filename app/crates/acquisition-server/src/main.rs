@@ -19,6 +19,7 @@ const DEFAULT_PREVIEW_ADDR: &str = "127.0.0.1:8082";
 const DEFAULT_AUTO_ADJUST_DURATION_SECS: u64 = 30;
 const DEFAULT_AUTO_ADJUST_MINIMIZE_GAIN: bool = false;
 const DEFAULT_AUTO_ADJUST_NO_BOOST_FRAMERATE: bool = false;
+const DEFAULT_AUTO_ADJUST_TARGET_BRIGHTNESS: f64 = 0.5;
 const DEFAULT_FRAME_FORMAT: FrameFormat = FrameFormat::Tiff;
 const DEFAULT_ZOOM_SIZE: u32 = 101;
 const MIN_ZOOM_SIZE: u32 = 3;
@@ -121,6 +122,12 @@ pub struct Args {
     /// Timeout for auto-adjust convergence in seconds.
     #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_DURATION_SECS)]
     pub auto_adjust_duration_secs: u64,
+
+    /// Brightness the startup auto-adjust aims for, from 0 (black) to 1 (white). Lower it
+    /// if the auto-adjusted image comes out too bright. Auto-adjusts started from a
+    /// client bring their own target.
+    #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_TARGET_BRIGHTNESS)]
+    pub auto_adjust_target_brightness: f64,
 
     /// Use MinimizeGain profile for auto-adjust. Default is MinimizeExposureTime.
     #[arg(long, default_value_t = DEFAULT_AUTO_ADJUST_MINIMIZE_GAIN)]
@@ -388,6 +395,12 @@ impl Args {
                     self.framerate
                 ));
             }
+        }
+        let t = self.auto_adjust_target_brightness;
+        if !(t > 0.0 && t < 1.0) {
+            return Err(format!(
+                "--auto-adjust-target-brightness must be between 0 and 1, got {t}"
+            ));
         }
         if let Some(g) = self.gain {
             if !(g >= 0.0 && g.is_finite()) {
